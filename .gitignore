@@ -21,4 +21,6 @@ data/
 O-DRIVE-NOTE.txt
 deploy/datum-pool/postgres-data/
 deploy/postgres-data/
+deploy/docker-compose.lab.yml
+
 
