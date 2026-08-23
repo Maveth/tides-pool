@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tides-pool"
+version = "0.1.0"
+description = "DATUM-only Ocean-like mining pool with TIDES rewards (TN4 Blake lab)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "maveth" }]
+dependencies = [
+    "fastapi>=0.110,<0.120",
+    "uvicorn[standard]>=0.27,<0.35",
+    "pydantic>=2.6,<3",
+    "pydantic-settings>=2.2,<3",
+    "asyncpg>=0.29,<0.32",
+    "PyYAML>=6.0,<7",
+    "PyNaCl>=1.5,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0,<9", "httpx>=0.27,<0.29"]
+
+[project.scripts]
+tides-pool = "tides_pool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tides_pool = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

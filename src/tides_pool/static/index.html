@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TIDES lab pool</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <a href="/">TIDES</a>
+      <span class="tag">lab · DATUM-only · no Lightning</span>
+    </div>
+    <form id="lookup" class="lookup" action="/address" method="get">
+      <input name="a" id="addrInput" type="text" placeholder="Lookup payout address…" autocomplete="off" spellcheck="false" />
+      <button type="submit">Look up</button>
+    </form>
+  </header>
+
+  <main>
+    <section id="poolView">
+      <h1>Pool</h1>
+      <div class="cards" id="poolCards">Loading…</div>
+
+      <div class="join box" id="joinBox">
+        <h2>Join (your DATUM → this pool)</h2>
+        <p class="muted">GPUs point at <strong>your</strong> Gateway. Your Gateway uses these pool settings:</p>
+        <pre id="joinPre">Loading…</pre>
+        <p class="muted"><code>pool_pubkey</code> can be left empty on MaVeTh Blake DATUM builds (auto-fetch from this site). Others: paste the pubkey once.</p>
+      </div>
+
+
+      <div class="grid-2">
+        <div>
+          <h2>Contributors <span class="muted">(TIDES window)</span></h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>#</th><th>Address</th><th>Work</th><th>Share %</th></tr>
+              </thead>
+              <tbody id="contribBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h2>Recent pool blocks</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Height</th><th>Finder</th><th>Reward</th><th>Diff</th></tr>
+              </thead>
+              <tbody id="blocksBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <p class="footnote">
+        Fee <strong>10%</strong> · <strong>80%</strong> of fee to previous block finder (next coinbase) ·
+        ops keep <strong>2%</strong> · window ≈ <strong>8 × difficulty</strong> (Ocean TIDES).
+      </p>
+    </section>
+
+    <section id="userView" class="hidden">
+      <p><a href="/">&larr; Pool</a></p>
+      <h1 id="userTitle">Address</h1>
+      <div class="cards" id="userCards">Loading…</div>
+      <h2>Recent shares</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Seq</th><th>Worker</th><th>Work</th><th>When (UTC)</th></tr>
+          </thead>
+          <tbody id="sharesBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footerMeta"></span>
+    · <a href="/docs">API</a>
+    · <a href="/health">health</a>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

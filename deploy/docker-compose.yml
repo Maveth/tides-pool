@@ -1,0 +1,59 @@
+# Example / starter compose for tides-pool (TrueNAS / Docker)
+# Copy to your host, set env, then: docker compose up -d --build
+#
+# UI:   host :8088
+# Prime: host :28916  (DATUM Gateways set pool_host + pool_port)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tides
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tides}
+      POSTGRES_DB: tides
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+      - ../sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tides -d tides"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  tides-pool:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      TIDES_DATABASE_URL: postgresql://tides:${POSTGRES_PASSWORD:-tides}@postgres:5432/tides
+      TIDES_HOST: 0.0.0.0
+      TIDES_PORT: 8080
+      TIDES_NETWORK: ${TIDES_NETWORK:-testnet4}
+      TIDES_FEE_BPS: "1000"
+      TIDES_FINDER_FEE_SHARE_BPS: "8000"
+      TIDES_WINDOW_BLOCKS: "8"
+      TIDES_POOL_OPS_ADDRESS: ${TIDES_POOL_OPS_ADDRESS:?set fee address}
+      TIDES_COINBASE_TAG_PRIMARY: TIDES
+      TIDES_COINBASE_TAG_SECONDARY: ${TIDES_COINBASE_TAG_SECONDARY:-Maveth_tides}
+      TIDES_BITCOIN_RPC_URL: ${TIDES_BITCOIN_RPC_URL:?set knots rpc url}
+      TIDES_BITCOIN_RPC_USER: ${TIDES_BITCOIN_RPC_USER:-datum}
+      TIDES_BITCOIN_RPC_PASSWORD: ${TIDES_BITCOIN_RPC_PASSWORD:?set rpc password}
+      TIDES_CHAIN_SYNC_SECONDS: "15"
+      TIDES_DATUM_PRIME_PORT: "28916"
+      TIDES_MIN_SHARE_DIFFICULTY: "4"
+      TIDES_GPU_BASELINE_HASHRATE_HS: "2500000000"
+      TIDES_ADDRESS_WORK_CAP_MULTIPLIER: "20"
+      TIDES_ADDRESS_WORK_CAP_WINDOW_SEC: "3600"
+      TIDES_POOL_KEYS_PATH: "/app/data/pool_keys.json"
+    volumes:
+      - ./data:/app/data:rw
+    ports:
+      - "8088:8080"
+      - "28916:28916"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped

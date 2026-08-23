@@ -1,0 +1,6 @@
+Blake2b-only DATUM Gateway: solo-first docs, TN4 UI, pubkey auto-fetch
+
+Publish the lab Blake2b V2 Gateway for RC2/Knots PR #359 users who need a
+working Sia-Sv1 notify dialect. Default remains non-pooled (solo). Optional
+pool_host client mode is documented; empty pool_pubkey auto-fetches from
+https://<pool_host>/api/pool_pubkey. Pool/TIDES server lives in Maveth/tides-pool.

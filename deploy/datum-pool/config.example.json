@@ -1,0 +1,39 @@
+{
+  "bitcoind": {
+    "rpcuser": "datum",
+    "rpcpassword": "CHANGE_ME",
+    "rpcurl": "http://127.0.0.1:48332",
+    "notify_fallback": true,
+    "work_update_seconds": 5
+  },
+  "stratum": {
+    "listen_port": 23336,
+    "vardiff_min": 4,
+    "vardiff_target_shares_min": 15
+  },
+  "mining": {
+    "pool_address": "YOUR_FEE_OR_FALLBACK_ADDRESS",
+    "coinbase_tag_primary": "TIDES",
+    "coinbase_tag_secondary": "Maveth_tides",
+    "blake2b_headline": "Totoro",
+    "allow_submitblock": true
+  },
+  "api": {
+    "admin_password": "CHANGE_ME",
+    "listen_port": 7155,
+    "modify_conf": false
+  },
+  "logger": {
+    "log_to_console": true,
+    "log_to_file": false,
+    "log_level_console": 2
+  },
+  "datum": {
+    "pool_host": "tides.maveth.ca",
+    "pool_port": 28916,
+    "pool_pubkey": "",
+    "pooled_mining_only": false,
+    "pool_pass_full_users": true,
+    "pool_pass_workers": true
+  }
+}
