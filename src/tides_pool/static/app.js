@@ -29,11 +29,12 @@ function card(label, value, mono) {
 }
 
 async function loadPool() {
-  const [stats, contrib, blocks, info] = await Promise.all([
+  const [stats, contrib, blocks, info, coinbaser] = await Promise.all([
     jget("/api/stats"),
     jget("/api/contributors?limit=50"),
     jget("/api/blocks?limit=20"),
     jget("/api/info"),
+    jget("/api/coinbaser"),
   ]);
 
   document.getElementById("poolCards").innerHTML = [
@@ -65,6 +66,24 @@ async function loadPool() {
   ].join("");
 
 
+  const cbBody = document.getElementById("coinbaserBody");
+  if (cbBody) {
+    const outs = (coinbaser && coinbaser.outputs) || [];
+    if (!outs.length) {
+      cbBody.innerHTML = `<tr><td colspan="3" class="muted">No coinbaser outputs (empty window → ops only)</td></tr>`;
+    } else {
+      cbBody.innerHTML = outs
+        .map(
+          (o) => `<tr>
+          <td>${o.kind || "—"}</td>
+          <td class="mono"><a href="/address?a=${encodeURIComponent(o.address)}" title="${o.address}">${o.address}</a></td>
+          <td>${fmtSats(o.sats)}</td>
+        </tr>`
+        )
+        .join("");
+    }
+  }
+
   const cbody = document.getElementById("contribBody");
   if (!contrib.length) {
     cbody.innerHTML = `<tr><td colspan="4" class="muted">No shares in window yet. Lab: POST /api/lab/share</td></tr>`;
@@ -73,7 +92,7 @@ async function loadPool() {
       .map(
         (c, i) => `<tr>
         <td>${i + 1}</td>
-        <td><a class="truncate" href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${c.address}</a></td>
+        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${c.address}</a></td>
         <td>${fmtInt(c.work)}</td>
         <td>${c.share_pct.toFixed(2)}%</td>
       </tr>`

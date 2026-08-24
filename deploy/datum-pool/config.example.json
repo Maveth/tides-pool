@@ -29,7 +29,7 @@
     "log_level_console": 2
   },
   "datum": {
-    "pool_host": "tides.maveth.ca",
+    "pool_host": "192.168.0.143",
     "pool_port": 28916,
     "pool_pubkey": "",
     "pooled_mining_only": false,

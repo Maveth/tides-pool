@@ -1,7 +1,18 @@
-from tides_pool.addresses import address_to_script
+from tides_pool.addresses import address_to_script, bech32_decode
 
 
 def test_mfh5a_ops_script():
     # Known from bitcoin-cli getaddressinfo for mfh5aSGhAWyJ2cv8vU2S1jZ1bujwEizRV3
     script = address_to_script("mfh5aSGhAWyJ2cv8vU2S1jZ1bujwEizRV3")
     assert script.hex() == "76a91401ea3d1be1ce4d6c25a1fb506e7aafc95d3ec7e688ac"
+
+
+def test_tb1_p2wpkh_script():
+    addr = "tb1qp9saey2fnj5403xyz23akrlnz89985wwztvzta"
+    hrp, witver, prog = bech32_decode(addr)
+    assert hrp == "tb"
+    assert witver == 0
+    assert len(prog) == 20
+    script = address_to_script(addr)
+    assert script == bytes([0x00, 0x14]) + prog
+    assert len(script) == 22

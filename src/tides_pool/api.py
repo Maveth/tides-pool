@@ -191,7 +191,9 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
 
 @app.get("/api/blocks", response_model=list[BlockOut])
 async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
-    rows = await store.list_blocks(limit=limit)
+    rows = await store.list_blocks(limit=limit * 2)
+    # Hide synthetic lab rows from the public site
+    real = [b for b in rows if not str(b.block_hash).startswith("lab-")][:limit]
     return [
         BlockOut(
             height=b.height,
@@ -201,7 +203,7 @@ async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
             finder_address=b.finder_address,
             accounted_at=b.accounted_at,
         )
-        for b in rows
+        for b in real
     ]
 
 

@@ -12,7 +12,7 @@
 ## DATUM2 mode
 
 - Container: `bip110-datum-pool`
-- `datum.pool_host` = `127.0.0.1:28916` → **talking to tides-pool Prime** (pooled coinbaser + share submit)
+- `datum.pool_host` = **`192.168.0.143:28916`** (LAN IP) → **talking to tides-pool Prime** (pooled coinbaser + share submit). Do **not** use `tides.maveth.ca` for the house Gateway — public DNS stalls the DATUM handshake and falls back to Non-Pooled (single 50 BTC `mining.pool_address`).
 - `pooled_mining_only` = **false** → if Prime dies, Gateway can fall back to 100% `mining.pool_address` (safer for lab). Set **true** for Ocean-strict (disconnect miners if pool unreachable).
 - Coinbase **primary tag** when pooled: comes from Prime `0x99` configure → **`TIDES`** (Ocean-style override). Local JSON also has `TIDES` / `MaVeTh`.
 

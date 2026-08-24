@@ -5,7 +5,8 @@ import json
 p = "/mnt/Alexandria/local/tides-pool/deploy/datum-pool/config.json"
 d = json.load(open(p))
 d["datum"]["pool_pubkey"] = ""
-d["datum"]["pool_host"] = "tides.maveth.ca"
+# House DATUM2 must use LAN IP — public DNS (tides.maveth.ca) stalls handshake / falls to non-pooled.
+d["datum"]["pool_host"] = "192.168.0.143"
 d["datum"]["pool_port"] = 28916
 json.dump(d, open(p, "w"), indent=2)
 print("pool_host", d["datum"]["pool_host"])
