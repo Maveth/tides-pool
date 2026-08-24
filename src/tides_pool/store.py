@@ -58,6 +58,9 @@ class Store(ABC):
     ) -> list[ShareRow]: ...
 
     @abstractmethod
+    async def list_share_rows_since(self, since_seconds: int, *, limit: int = 50_000) -> list[ShareRow]: ...
+
+    @abstractmethod
     async def share_count(self) -> int: ...
 
     @abstractmethod
@@ -145,6 +148,20 @@ class MemoryStore(Store):
     ) -> list[ShareRow]:
         rows = [r for r in reversed(self._shares) if r.address == address]
         return rows[offset : offset + limit]
+
+    async def list_share_rows_since(self, since_seconds: int, *, limit: int = 50_000) -> list[ShareRow]:
+        import time
+
+        cutoff = time.time() - max(int(since_seconds), 0)
+        out: list[ShareRow] = []
+        for r in reversed(self._shares):
+            ts = r.accepted_at.timestamp() if r.accepted_at.tzinfo else r.accepted_at.replace(tzinfo=timezone.utc).timestamp()
+            if ts < cutoff:
+                break
+            out.append(r)
+            if len(out) >= limit:
+                break
+        return out
 
     async def share_count(self) -> int:
         return len(self._shares)
@@ -333,6 +350,30 @@ class PostgresStore(Store):
             for r in rows
         ]
 
+    async def list_share_rows_since(self, since_seconds: int, *, limit: int = 50_000) -> list[ShareRow]:
+        rows = await self._p().fetch(
+            """
+            SELECT seq, address, worker, work, fee_bps, accepted_at
+            FROM shares
+            WHERE accepted_at >= now() - ($1 * interval '1 second')
+            ORDER BY seq DESC
+            LIMIT $2
+            """,
+            int(since_seconds),
+            int(limit),
+        )
+        return [
+            ShareRow(
+                seq=r["seq"],
+                address=r["address"],
+                worker=r["worker"],
+                work=r["work"],
+                fee_bps=r["fee_bps"],
+                accepted_at=r["accepted_at"],
+            )
+            for r in rows
+        ]
+
     async def share_count(self) -> int:
         return int(await self._p().fetchval("SELECT COUNT(*) FROM shares") or 0)
 
@@ -489,18 +530,47 @@ def window_slice(shares_newest_first: list[Share], target_work: int) -> list[Sha
     return out
 
 
-def contributor_rows(window: list[Share]) -> list[dict[str, Any]]:
+def contributor_rows(
+    window: list[Share],
+    *,
+    recent: list[ShareRow] | None = None,
+    hashrate_window_sec: int = 600,
+) -> list[dict[str, Any]]:
     work: dict[str, int] = {}
+    shares: dict[str, int] = {}
     for s in window:
         work[s.address] = work.get(s.address, 0) + s.work
+        shares[s.address] = shares.get(s.address, 0) + 1
     total = sum(work.values()) or 1
-    rows = [
-        {
-            "address": addr,
-            "work": w,
-            "share_pct": round(100.0 * w / total, 4),
-        }
-        for addr, w in work.items()
-    ]
+
+    recent_work: dict[str, int] = {}
+    if recent:
+        for r in recent:
+            recent_work[r.address] = recent_work.get(r.address, 0) + r.work
+
+    rows = []
+    for addr, w in work.items():
+        rw = recent_work.get(addr, 0)
+        hs = estimate_hashrate_hs(rw, hashrate_window_sec) if rw else 0.0
+        rows.append(
+            {
+                "address": addr,
+                "work": w,
+                "share_pct": round(100.0 * w / total, 4),
+                "shares": shares.get(addr, 0),
+                "hashrate_hs": hs,
+            }
+        )
     rows.sort(key=lambda r: (-r["work"], r["address"]))
     return rows
+
+
+# Bitcoin-pool Diff1 convention: expected hashes ≈ difficulty × 2^32
+_DIFF1_HASHES = float(1 << 32)
+
+
+def estimate_hashrate_hs(work_diff1: int | float, window_sec: float) -> float:
+    """Rough H/s from Diff1-equivalent share work over a wall-clock window."""
+    if window_sec <= 0 or work_diff1 <= 0:
+        return 0.0
+    return float(work_diff1) * _DIFF1_HASHES / float(window_sec)

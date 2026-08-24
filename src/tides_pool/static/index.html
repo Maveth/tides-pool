@@ -50,9 +50,9 @@
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>#</th><th>Address</th><th>Work</th><th>Share %</th></tr>
+                <tr><th>#</th><th>Address</th><th>Shares</th><th>Work <span class="muted">(diff‑1)</span></th><th>~H/s</th><th>Share %</th></tr>
               </thead>
-              <tbody id="contribBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+              <tbody id="contribBody"><tr><td colspan="6">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -72,6 +72,9 @@
       <p class="footnote">
         Fee <strong>10%</strong> · <strong>80%</strong> of fee to previous block finder (next coinbase) ·
         ops keep <strong>2%</strong> · window ≈ <strong>8 × difficulty</strong> (Ocean TIDES).
+        <br />
+        <strong>Work</strong> = sum of Diff1 share units in the TIDES window (payout weight).
+        <strong>~H/s</strong> ≈ Σ(work)×2³² / 10 min (rough; at vardiff floor many shares are work=4).
       </p>
     </section>
 

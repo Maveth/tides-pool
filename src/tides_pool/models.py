@@ -33,6 +33,15 @@ class PoolStats(BaseModel):
     address_work_cap: int = 0
     address_work_cap_window_sec: int = 3600
     gpu_baseline_hs: float = 0.0
+    # Rough pool hashrate from recent accepted share work (Diff1 × 2^32 / Δt)
+    hashrate_hs: float = 0.0
+    hashrate_window_sec: int = 600
+    hashrate_work: int = 0
+    hashrate_shares: int = 0
+    hashrate_note: str = (
+        "Estimate: Σ(share_work) × 2^32 / window_sec. "
+        "share_work is Diff1 units from Gateway target_byte (often 4 at vardiff floor)."
+    )
 
 
 
@@ -60,6 +69,8 @@ class Contributor(BaseModel):
     address: str
     work: int
     share_pct: float
+    shares: int = 0
+    hashrate_hs: float = 0.0
 
 
 class BlockOut(BaseModel):

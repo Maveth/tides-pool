@@ -8,6 +8,16 @@ function fmtSats(sats) {
   return fmtInt(n) + " sats";
 }
 
+function fmtHashrate(hs) {
+  const n = Number(hs || 0);
+  if (n <= 0) return "—";
+  if (n >= 1e12) return (n / 1e12).toFixed(2) + " TH/s";
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + " GH/s";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + " MH/s";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + " kH/s";
+  return n.toFixed(0) + " H/s";
+}
+
 function shortAddr(a) {
   if (!a) return "—";
   if (a.length <= 16) return a;
@@ -46,6 +56,14 @@ async function loadPool() {
     card("Addresses in window", fmtInt(stats.addresses_in_window)),
     card("Share log work", fmtInt(stats.share_log_work)),
     card("Shares accepted", fmtInt(stats.share_count)),
+    card(
+      "Est. pool hashrate",
+      fmtHashrate(stats.hashrate_hs) +
+        (stats.hashrate_window_sec
+          ? ` · ${fmtInt(stats.hashrate_shares)} shares / ${stats.hashrate_window_sec / 60}m`
+          : ""),
+      true
+    ),
     card("Last pool block", stats.last_pool_block_height ?? "—"),
     card("Est. subsidy", fmtSats(stats.reward_estimate_sats)),
     card("Ops address", shortAddr(stats.pool_ops_address), true),
@@ -86,14 +104,16 @@ async function loadPool() {
 
   const cbody = document.getElementById("contribBody");
   if (!contrib.length) {
-    cbody.innerHTML = `<tr><td colspan="4" class="muted">No shares in window yet. Lab: POST /api/lab/share</td></tr>`;
+    cbody.innerHTML = `<tr><td colspan="6" class="muted">No shares in window yet. Lab: POST /api/lab/share</td></tr>`;
   } else {
     cbody.innerHTML = contrib
       .map(
         (c, i) => `<tr>
         <td>${i + 1}</td>
         <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${c.address}</a></td>
-        <td>${fmtInt(c.work)}</td>
+        <td>${fmtInt(c.shares)}</td>
+        <td title="Sum of Diff1 share work in TIDES window">${fmtInt(c.work)}</td>
+        <td title="Rough hashrate from last 10 minutes of this address's shares">${fmtHashrate(c.hashrate_hs)}</td>
         <td>${c.share_pct.toFixed(2)}%</td>
       </tr>`
       )

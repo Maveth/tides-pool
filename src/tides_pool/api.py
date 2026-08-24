@@ -25,7 +25,14 @@ from tides_pool.models import (
     ShareOut,
     UserStats,
 )
-from tides_pool.store import MemoryStore, PostgresStore, Store, contributor_rows, window_slice
+from tides_pool.store import (
+    MemoryStore,
+    PostgresStore,
+    Store,
+    contributor_rows,
+    estimate_hashrate_hs,
+    window_slice,
+)
 from tides_pool.tides import coinbase_suggestion, split_reward, window_size
 
 settings = Settings()
@@ -154,6 +161,9 @@ async def stats() -> PoolStats:
     finder, credit = await store.pending_finder_credit()
     chain_raw = await store.get_meta("chain_height")
     chain_h = int(chain_raw) if chain_raw and chain_raw.isdigit() else None
+    hr_window = 600
+    recent = await store.list_share_rows_since(hr_window, limit=50_000)
+    recent_work = sum(r.work for r in recent)
     return PoolStats(
         share_log_work=await store.total_work(),
         share_count=await store.share_count(),
@@ -176,6 +186,10 @@ async def stats() -> PoolStats:
         address_work_cap=settings.address_work_cap(),
         address_work_cap_window_sec=settings.address_work_cap_window_sec,
         gpu_baseline_hs=settings.gpu_baseline_hashrate_hs,
+        hashrate_hs=estimate_hashrate_hs(recent_work, hr_window),
+        hashrate_window_sec=hr_window,
+        hashrate_work=recent_work,
+        hashrate_shares=len(recent),
     )
 
 
@@ -185,7 +199,9 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
     target = window_size(diff, settings.window_blocks)
     shares = await store.list_shares_newest(limit=50_000)
     window = window_slice(shares, target)
-    rows = contributor_rows(window)[:limit]
+    hr_window = 600
+    recent = await store.list_share_rows_since(hr_window, limit=50_000)
+    rows = contributor_rows(window, recent=recent, hashrate_window_sec=hr_window)[:limit]
     return [Contributor(**r) for r in rows]
 
 
