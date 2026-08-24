@@ -1,41 +1,50 @@
 # DATUM2 — pool Gateway (secondary)
 
-Mirrors solo DATUM (`bip110-datum-pow` on **:23335**) but:
+Mirrors solo DATUM (`bip110-datum-pow`) but is the **pooled** path into tides-pool.
 
 | | Solo (keep) | DATUM2 (this) |
 |--|-------------|----------------|
 | Stratum | 23335 | **23336** |
 | API UI | 7154 | **7155** |
-| Payout address | `mqMY6…` (maveth_tn4) | **`mfh5aSGhAWyJ2cv8vU2S1jZ1bujwEizRV3`** (tides_pool_tn4) |
-| Tags | Totoro / MaVeTh | TIDES / MaVeTh |
-| `pool_host` | empty (solo) | empty until DATUM Prime on tides-pool is live |
-| `vardiff_min` | 16384 (ASIC) | **4** (GPU-friendly; power-of-two) |
+| `mining.pool_address` | solo payout | **TIDES miner identity** (one address) |
+| Tags | Totoro / MaVeTh | TIDES / Maveth_tides |
+| `pool_host` | empty (solo) | tides-pool DATUM Prime (`192.168.0.143:28916`) |
+| `vardiff_min` | high (ASIC) | **4** (GPU-friendly; power-of-two) |
 
-GPU lab config on Windows: `O:\bip110minner\config.lab-tides-datum.yaml`  
-User/worker: `mfh5a….Maveth_GPU1`
+## Username mode (important)
 
-Wallet backups (do **not** overwrite maveth):  
-`O:\bip110minner\wallets\tides_pool_tn4\`
-
-## Start on NAS (host network, like solo)
-
-```bash
-bash /mnt/Alexandria/local/tides-pool/deploy/datum-pool/start-datum-pool.sh
-```
-
-Point a miner / test Gateway ASICs at: `tcp://192.168.0.143:23336`
-
-## When tides-pool speaks DATUM Prime
-
-Set in `config.json`:
+For one Gateway → one TIDES payout address with per-GPU workers:
 
 ```json
 "datum": {
-  "pool_host": "127.0.0.1",
-  "pool_port": 28916,
-  "pool_pubkey": "<128-hex from tides-pool>",
-  "pooled_mining_only": true
+  "pool_pass_full_users": false,
+  "pool_pass_workers": true
 }
 ```
 
-Until then, DATUM2 still builds local templates paying **100% to mfh5a…** (solo-style), while tides-pool UI/API already syncs RC2 tip/difficulty.
+- GPUs authorize as **worker-only** usernames: `.GPU1`, `.GPU2`, `.GPU3`
+- DATUM prepends `mining.pool_address` → TIDES sees `ADDRESS.GPU1`, etc.
+- Do **not** enable `pool_pass_full_users` unless you intentionally want each miner address credited separately on TIDES.
+
+`mining.pool_address` should be the miner identity on TIDES (lab: `n1Qve…`). Keep the pool ops/fee address (`mqKdiu…`) as tides-pool `TIDES_POOL_OPS_ADDRESS`, not as the Gateway miner identity.
+
+## Start on NAS (host network)
+
+```bash
+# copy example → config.json and edit secrets/addresses first
+cp config.example.json config.json
+bash /mnt/Alexandria/local/tides-pool/deploy/datum-pool/start-datum-pool.sh
+```
+
+- Stratum: `tcp://192.168.0.143:23336`
+- UI: http://192.168.0.143:7155/
+- Pool: http://192.168.0.143:8088/
+
+Windows GPU lab launcher: `O:\bip110minner\scripts\tides_mine_3gpu_supervisor.py`  
+Identities: `O:\bip110minner\scripts\tides_gpu_identities.json`
+
+## Notes
+
+- `config.json` / `pool_keys.json` are gitignored — never commit secrets.
+- Empty `pool_pubkey` is OK on MaVeTh Blake builds (auto-fetch from tides-pool).
+- If TIDES logs `append_share() got an unexpected keyword argument 'difficulty'`, the running container has a stale `datum_prime.py` — redeploy from this repo.
