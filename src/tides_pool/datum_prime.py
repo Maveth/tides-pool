@@ -426,8 +426,11 @@ class DatumPrimeSession:
         difficulty: float,
         nonce: int,
     ) -> None:
-        """Previous-finder bonus: this finder gets 8% on *next* coinbasers; prior credit marked paid."""
-        paid_n = await self.store.mark_finder_credits_paid(height)
+        """Previous-finder bonus: this finder gets 8% on *next* coinbasers; prior credit marked paid.
+
+        Order matters: finder_credits.from_height / paid_in_height FK → blocks(height),
+        so record the block row *before* marking prior credits paid or opening a new credit.
+        """
         block_hash = f"pool-{height}-{finder[:8]}-{nonce:08x}"
         await self.store.record_block(
             height=height,
@@ -436,6 +439,8 @@ class DatumPrimeSession:
             reward_sats=reward_sats,
             finder_address=finder,
         )
+        await self.store.set_meta("last_height", str(height))
+        paid_n = await self.store.mark_finder_credits_paid(height)
         bonus = reward_sats * finder_credit_bps(self.settings) // 10_000
         await self.store.open_finder_credit(height, finder, bonus)
         log.info(

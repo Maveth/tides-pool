@@ -121,6 +121,10 @@ async def _reward_estimate() -> int:
 
 
 async def _last_height() -> int | None:
+    # Prefer blocks table (source of truth for "Recent pool blocks").
+    rows = await store.list_blocks(limit=1)
+    if rows:
+        return rows[0].height
     raw = await store.get_meta("last_height")
     if raw is None:
         return None
@@ -354,7 +358,6 @@ async def lab_simulate_block(
     reward = reward_sats if reward_sats is not None else await _reward_estimate()
     diff = max(difficulty, 1)
     block_hash = f"lab-{height}-{finder[:8]}"
-    paid_n = await store.mark_finder_credits_paid(height)
     await store.record_block(
         height=height,
         block_hash=block_hash,
@@ -362,6 +365,7 @@ async def lab_simulate_block(
         reward_sats=reward,
         finder_address=finder,
     )
+    paid_n = await store.mark_finder_credits_paid(height)
     credit = reward * finder_credit_bps(settings) // 10_000
     await store.open_finder_credit(height, finder, credit)
     return {
