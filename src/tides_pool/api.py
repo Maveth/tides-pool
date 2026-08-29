@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -34,8 +35,39 @@ from tides_pool.store import (
     window_slice,
 )
 from tides_pool.tides import coinbase_suggestion, split_reward, window_size
+from tides_pool.addresses import address_to_script
 
 settings = Settings()
+
+
+def require_admin(request: Request) -> None:
+    """Gate for write endpoints. Fails closed: with no admin_token configured,
+    every request is refused, so a default deployment exposes no writable path.
+    """
+    if not settings.admin_token:
+        raise HTTPException(503, "admin/lab endpoints disabled (no admin_token set)")
+    sent = request.headers.get("x-admin-token") or request.query_params.get("admin_token", "")
+    if not hmac.compare_digest(sent, settings.admin_token):
+        raise HTTPException(401, "bad or missing admin token")
+
+
+def require_valid_address(address: str) -> str:
+    """Reject anything that is not a payable address for this network before it
+    reaches the share log. Without this the log could hold entries no coinbase
+    can ever pay, and a caller could credit an arbitrary string."""
+    addr = address.strip()
+    try:
+        address_to_script(addr)
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid address: {exc}") from exc
+    prefixes = {"testnet4": ("tb1", "m", "n", "2"), "testnet": ("tb1", "m", "n", "2"),
+                "regtest": ("bcrt1", "m", "n", "2"), "mainnet": ("bc1", "1", "3")}
+    ok = prefixes.get(settings.network)
+    if ok and not addr.lower().startswith(tuple(p.lower() for p in ok)):
+        raise HTTPException(400, f"address not valid for network {settings.network}")
+    return addr
+
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 log = logging.getLogger("tides_pool.api")
 
@@ -306,8 +338,9 @@ async def coinbaser() -> CoinbaserResponse:
 
 
 @app.post("/api/admin/clear-lab")
-async def clear_lab(confirm: str = Query("")) -> dict:
+async def clear_lab(request: Request, confirm: str = Query("")) -> dict:
     """Wipe share log / fake pool blocks. Keeps RC2 chain meta. confirm=YES"""
+    require_admin(request)
     if confirm != "YES":
         raise HTTPException(400, "pass confirm=YES")
     result = await store.clear_lab_data()
@@ -319,7 +352,8 @@ async def clear_lab(confirm: str = Query("")) -> dict:
 
 
 @app.post("/api/admin/resync-chain")
-async def resync_chain() -> dict:
+async def resync_chain(request: Request) -> dict:
+    require_admin(request)
     global _rpc_ok
     data = await sync_once(store, settings)
     _rpc_ok = True
@@ -329,16 +363,17 @@ async def resync_chain() -> dict:
 @app.post("/lab/share")
 @app.post("/api/lab/share")
 async def lab_inject_share(
+    request: Request,
     address: str,
     work: int = 1,
     worker: str | None = None,
 ) -> dict:
     """Dev-only share inject (not DATUM). Prefer real Gateway once Prime is live."""
+    require_admin(request)
     if work < 1:
         raise HTTPException(400, "work must be >= 1")
-    if not address.strip():
-        raise HTTPException(400, "address required")
-    row = await store.append_share(address.strip(), work, worker=worker, fee_bps=0)
+    address = require_valid_address(address)
+    row = await store.append_share(address, work, worker=worker, fee_bps=0)
     return {
         "seq": row.seq,
         "address": row.address,
@@ -350,11 +385,14 @@ async def lab_inject_share(
 @app.post("/lab/block")
 @app.post("/api/lab/block")
 async def lab_simulate_block(
+    request: Request,
     finder: str,
     height: int,
     difficulty: int = 1,
     reward_sats: int | None = None,
 ) -> dict:
+    require_admin(request)
+    finder = require_valid_address(finder)
     reward = reward_sats if reward_sats is not None else await _reward_estimate()
     diff = max(difficulty, 1)
     block_hash = f"lab-{height}-{finder[:8]}"
