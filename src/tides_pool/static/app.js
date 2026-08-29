@@ -47,6 +47,21 @@ async function loadPool() {
     jget("/api/coinbaser"),
   ]);
 
+  // La nota al pie llevaba el 10% / 2% escritos a mano y se quedaba mintiendo
+  // en cuanto tocabas TIDES_FEE_BPS. Ahora sale de /api/stats.
+  const pct = (bps) => {
+    const v = bps / 100;
+    return (Number.isInteger(v) ? v : Number(v.toFixed(2))) + "%";
+  };
+  const setTxt = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  setTxt("fnFee", pct(stats.fee_bps));
+  setTxt("fnFinder", pct(stats.finder_fee_share_bps));
+  setTxt("fnOps", pct(stats.fee_bps * (10000 - stats.finder_fee_share_bps) / 10000));
+  setTxt("fnWindow", stats.window_blocks + " × difficulty");
+
   document.getElementById("poolCards").innerHTML = [
     card("Network", stats.network + (stats.rpc_ok ? " · RPC ok" : " · RPC ?")),
     card("Chain tip (RC2)", stats.chain_height ?? "—"),
