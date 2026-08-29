@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     # Postgres
     database_url: str = "postgresql://tides:tides@localhost:5432/tides"
 
+    # Admin / lab write auth. If set, /api/admin/* and /api/lab/* require the
+    # token via the X-Admin-Token header (or ?admin_token=). Empty = those
+    # endpoints refuse every request (fail closed), so an unconfigured pool is
+    # never writable from outside. Set to a long random value to use them.
+    admin_token: str = ""
+
     # Knots / bitcoind RPC (RC2 TN4)
     bitcoin_rpc_url: str = "http://192.168.0.143:48332"
     bitcoin_rpc_user: str = "datum"
