@@ -23,15 +23,15 @@ class Settings(BaseSettings):
 
     # TIDES / fees (basis points of block reward)
     window_blocks: int = Field(default=8, ge=1, le=32)
-    fee_bps: int = Field(default=1000, description="10% = 1000 bps")
+    fee_bps: int = Field(default=500, description="5% = 500 bps")
     finder_fee_share_bps: int = Field(
         default=8000,
-        description="Of the pool fee, 80% goes to previous finder",
+        description="Of the pool fee, 80% goes to previous finder (4% of block); ops keep 20% of fee (1% of block)",
     )
 
     # Coinbase / dust
     min_output_sats: int = 1000
-    # Dedicated fee-keep address (2% of block when finder bonus is active; 10% if no prior finder yet)
+    # Dedicated fee-keep address (1% of block when finder bonus is active; 5% if no prior finder yet)
     pool_ops_address: str = "mqKdiu6W825MWc31NACiwxRchTb4dP2NRH"
     coinbase_tag_primary: str = "TIDES"
     coinbase_tag_secondary: str = "MaVeTh"

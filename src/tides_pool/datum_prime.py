@@ -426,7 +426,7 @@ class DatumPrimeSession:
         difficulty: float,
         nonce: int,
     ) -> None:
-        """Previous-finder bonus: this finder gets 8% on *next* coinbasers; prior credit marked paid.
+        """Previous-finder bonus: this finder gets 4% on *next* coinbasers; prior credit marked paid.
 
         Order matters: finder_credits.from_height / paid_in_height FK → blocks(height),
         so record the block row *before* marking prior credits paid or opening a new credit.

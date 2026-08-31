@@ -21,9 +21,9 @@ See also the approved session plan. This file is the in-repo summary.
 
 ```text
 R = block reward
-TIDES miners : 0.90 R   (in coinbase of N, suggested before find)
-Finder credit: 0.08 R   (owed to finder of N; paid in N+1… suggestions)
-Pool ops     : 0.02 R   (in coinbase of N)
+TIDES miners : 0.95 R   (in coinbase of N, suggested before find)
+Finder credit: 0.04 R   (80% of the 5% fee; owed to finder of N; paid in N+1… suggestions)
+Pool ops     : 0.01 R   (20% of the 5% fee; in coinbase of N)
 ```
 
 ## Live lab wiring (NAS)

@@ -112,19 +112,19 @@ def test_coinbase_suggestion_fee_split():
         reward_sats=1_000_000,
         block_difficulty=12,
         window_blocks=8,
-        miner_bps=9000,
+        miner_bps=9500,
         min_output_sats=0,
     )
-    # ops = 100k; pay 80k finder credit to bob (previous finder)
+    # ops = 50k fee bucket; pay 40k finder credit to bob (previous finder)
     outs = coinbase_suggestion(
         tides,
         pool_ops_address="ops",
         finder_address="bob",
-        finder_credit_sats=80_000,
+        finder_credit_sats=40_000,
         min_output_sats=0,
     )
     by = {o["address"]: o["sats"] for o in outs}
-    assert by["ops"] == 20_000
-    assert by["bob"] == 450_000 + 80_000  # tides half of 900k + finder
-    assert by["alice"] == 450_000
+    assert by["ops"] == 10_000
+    assert by["bob"] == 475_000 + 40_000  # tides half of 950k + finder
+    assert by["alice"] == 475_000
     assert sum(by.values()) == 1_000_000

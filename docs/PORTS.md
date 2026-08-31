@@ -22,7 +22,7 @@ See `docs/WALLETS.md`. Quick map:
 
 | Role | Address | Backup folder |
 |------|---------|----------------|
-| **Pool fee 2%** | `mqKdiu…` | `wallets\tides_pool_fee_tn4\` |
+| **Pool fee 1%** | `mqKdiu…` | `wallets\tides_pool_fee_tn4\` |
 | GPU miner A | `n1Qve…` | `wallets\tides_gpu1_tn4\` |
 | Miner B | `mfh5a…` | `wallets\tides_pool_tn4\` |
 | Solo MaVeTh | `mqMY6…` | `wallets\maveth_tn4_*` |

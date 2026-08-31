@@ -23,7 +23,7 @@ class PoolStats(BaseModel):
     reward_estimate_sats: int = 0
     pending_finder_address: str | None = None
     pending_finder_credit_sats: int = 0
-    fee_bps: int = 1000
+    fee_bps: int = 500
     finder_fee_share_bps: int = 8000
     window_blocks: int = 8
     network: str = "testnet4"

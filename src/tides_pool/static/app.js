@@ -47,8 +47,7 @@ async function loadPool() {
     jget("/api/coinbaser"),
   ]);
 
-  // La nota al pie llevaba el 10% / 2% escritos a mano y se quedaba mintiendo
-  // en cuanto tocabas TIDES_FEE_BPS. Ahora sale de /api/stats.
+  // Footnote is driven by /api/stats (fee_bps / finder_fee_share_bps), not hardcoded.
   const pct = (bps) => {
     const v = bps / 100;
     return (Number.isInteger(v) ? v : Number(v.toFixed(2))) + "%";

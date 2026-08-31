@@ -374,7 +374,7 @@ async def lab_simulate_block(
         "pending_credit_sats": credit,
         "ops_keep_sats": reward * (settings.fee_bps - finder_credit_bps(settings)) // 10_000,
         "marked_prior_credits_paid": paid_n,
-        "note": "8% finder bonus applies to subsequent coinbaser suggestions (all Gateways); not this block",
+        "note": "4% finder bonus (80% of the 5% fee) applies to subsequent coinbaser suggestions (all Gateways); ops keep 1%; not this block",
     }
 
 

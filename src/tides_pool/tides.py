@@ -17,7 +17,7 @@ class Share:
     seq: int
     address: str
     work: int  # difficulty-1 equivalent units (>= 1)
-    fee_bps: int = 1000  # fee tagged at share time
+    fee_bps: int = 500  # fee tagged at share time (default matches Settings)
 
 
 @dataclass(frozen=True, slots=True)

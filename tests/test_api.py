@@ -51,7 +51,7 @@ def test_lab_block_opens_finder_credit():
         params={"finder": "mFinder", "height": 42, "difficulty": 1, "reward_sats": 1_000_000},
     )
     assert r.status_code == 200
-    assert r.json()["pending_credit_sats"] == 80_000
+    assert r.json()["pending_credit_sats"] == 40_000  # 4% of 1e6
     coin = client.get("/api/coinbaser").json()
     assert coin["reward_sats_estimate"] == 1_000_000
     assert any(o["address"] == "mFinder" for o in coin["outputs"])
