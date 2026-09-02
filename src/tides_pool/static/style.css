@@ -155,3 +155,203 @@ footer {
   vertical-align: bottom;
   font-family: var(--mono);
 }
+
+
+.rules {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--panel-2, rgba(255,255,255,0.03));
+}
+.rules h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+.rules ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.rules li {
+  margin: 0.35rem 0;
+  line-height: 1.35;
+}
+.warn.box {
+  margin: 0.75rem 0 0.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--warn, #f0b429);
+  border-radius: 6px;
+  background: rgba(240, 180, 41, 0.08);
+  color: var(--text, #e8e8e8);
+  line-height: 1.4;
+}
+.warn.box strong {
+  color: var(--warn, #f0b429);
+}
+
+.alert.box {
+  margin: 1rem 0 1.25rem;
+  padding: 1rem 1.1rem;
+  border-radius: 10px;
+  border: 2px solid #e85d5d;
+  background: rgba(232, 93, 93, 0.12);
+  color: var(--text);
+  line-height: 1.45;
+}
+.alert.box strong { color: #ff8e8e; }
+.alert.box a { color: #ffb4b4; font-weight: 600; }
+.alert.box ul { margin: 0.5rem 0 0 1.2rem; padding: 0; }
+.alert.box li { margin: 0.35rem 0; }
+
+.badge-quarantine {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #3a1d00;
+  background: #ffb020;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  vertical-align: middle;
+  white-space: nowrap;
+  background: #243049;
+  color: var(--muted);
+}
+.badge-ok {
+  background: rgba(61, 214, 198, 0.18);
+  color: var(--accent);
+}
+.badge-warn {
+  background: rgba(240, 180, 41, 0.18);
+  color: var(--warn);
+}
+.badge-pending {
+  background: rgba(240, 180, 41, 0.18);
+  color: var(--warn);
+}
+.badge-orphan {
+  background: rgba(232, 93, 93, 0.22);
+  color: #ff8e8e;
+  font-weight: 700;
+}
+
+/* Recent pool blocks — status row colors */
+tr.row-orphan td {
+  background: rgba(232, 93, 93, 0.14);
+  color: #ffb4b4;
+  border-bottom-color: rgba(232, 93, 93, 0.35);
+}
+tr.row-orphan td a {
+  color: #ff8e8e;
+}
+tr.row-orphan:hover td {
+  background: rgba(232, 93, 93, 0.22);
+}
+
+tr.row-pending td {
+  background: rgba(240, 180, 41, 0.10);
+  border-bottom-color: rgba(240, 180, 41, 0.28);
+}
+tr.row-pending:hover td {
+  background: rgba(240, 180, 41, 0.16);
+}
+
+/* Dashboard primary panels */
+.box {
+  margin-top: 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+/* Coinbaser kind highlights */
+tr.row-finder td {
+  background: rgba(61, 214, 198, 0.14);
+  border-bottom-color: rgba(61, 214, 198, 0.35);
+}
+tr.row-finder:hover td {
+  background: rgba(61, 214, 198, 0.22);
+}
+tr.row-ops td {
+  background: rgba(110, 168, 255, 0.08);
+}
+.kind-finder {
+  display: inline-block;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+.kind-finder-inline {
+  color: var(--accent);
+  font-weight: 650;
+}
+.kind-ops {
+  color: var(--accent2);
+  font-weight: 600;
+}
+.more-link {
+  margin: 0.6rem 0 0;
+  font-size: 0.92rem;
+}
+
+/* Connect / warnings accordion (closed by default) */
+.connect-panel {
+  margin-top: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.connect-panel-top {
+  margin-top: 0.75rem;
+  margin-bottom: 1.1rem;
+  border-color: rgba(61, 214, 198, 0.35);
+}
+.connect-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  padding: 0.95rem 1.1rem;
+  user-select: none;
+}
+.connect-panel > summary::-webkit-details-marker { display: none; }
+.connect-panel > summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-weight: 700;
+  margin-right: 0.15rem;
+}
+.connect-panel[open] > summary::before { content: "▾"; }
+.connect-title {
+  font-weight: 650;
+  font-size: 1.02rem;
+}
+.connect-hint { font-size: 0.85rem; }
+.connect-panel > summary:hover {
+  background: rgba(110, 168, 255, 0.06);
+}
+.connect-body {
+  padding: 0 1.1rem 1.1rem;
+  border-top: 1px solid var(--border);
+}
+.connect-body .join.box,
+.connect-body .warn.box,
+.connect-body .alert.box {
+  margin-top: 0.9rem;
+}
+.connect-body .join.box { margin-top: 1rem; }
+.connect-body h2 { margin-top: 0.75rem; }

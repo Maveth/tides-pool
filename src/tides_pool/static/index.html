@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TIDES lab pool</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <title>TIDES · Mainnet Blake2b RC4</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260901i" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
       <a href="/">TIDES</a>
-      <span class="tag">lab · DATUM-only · no Lightning</span>
+      <span class="tag">mainnet · Blake2b · BIP110 RC4 · DATUM-only</span>
     </div>
     <form id="lookup" class="lookup" action="/address" method="get">
       <input name="a" id="addrInput" type="text" placeholder="Lookup payout address…" autocomplete="off" spellcheck="false" />
@@ -21,61 +21,122 @@
   <main>
     <section id="poolView">
       <h1>Pool</h1>
+      <p class="muted">Blake2b · BIP110 RC4 · DATUM-only. Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
+
+      <details class="connect-panel connect-panel-top" id="connectPanel">
+        <summary>
+          <span class="connect-title">How to connect</span>
+          <span class="connect-hint muted">Gateway requirements, Start9, checklist, warnings</span>
+        </summary>
+        <div class="connect-body">
+          <div class="alert box" id="reopenNote" role="status">
+            <strong>Coinbaser enforcement is on.</strong>
+            Multi-out windows reject type-0 / <code>coinbase_id=0</code> shares (reject 27 — no credit).
+            Use a patched Blake DATUM Gateway
+            (<a href="https://github.com/Maveth/datum_gateway-fly/tree/test/console-collapse-pr14-pr17" target="_blank" rel="noopener">Fly tip <code>121edd0</code></a>
+            /
+            <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_20" target="_blank" rel="noopener">StartOS <code>pow_0.4.1_20</code></a>).
+          </div>
+
+          <div class="join box" id="joinBox">
+            <h2>DATUM → this pool</h2>
+            <p class="muted">You run <strong>your own</strong> Knots + DATUM. Miners talk to <em>your</em> Gateway. Your Gateway talks to this pool.</p>
+            <pre id="joinPre">Loading…</pre>
+            <p class="muted">Paste the Prime <code>pool_pubkey</code> (128 hex) — blank is <strong>not</strong> auto-fetched on the recommended Fly build.</p>
+          </div>
+
+          <div class="warn box" id="joinDatumWarn">
+            <strong>Required Gateway:</strong>
+            <a href="https://github.com/Maveth/datum_gateway-fly/tree/test/console-collapse-pr14-pr17" target="_blank" rel="noopener">Fly tip <code>121edd0</code></a>
+            (Jason #17 multi-out). Stock Blake type-0 builds get reject 27 and can be quarantined.
+            Keep a solo fallback handy.
+          </div>
+
+          <div class="warn box" id="joinStart9Warn">
+            <strong>Start9:</strong> sideload
+            <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_20" target="_blank" rel="noopener">MaVeTh <code>pow_0.4.1_20</code></a>
+            — <code>datum_aarch64.s9pk</code> (Pi/ARM) or <code>datum_x86_64.s9pk</code> (Intel/AMD).
+            Unofficial sideload; verify SHA256 on the release page.
+          </div>
+
+          <div class="warn box">
+            <strong>Your own Knots node is required</strong> (BIP110 RC4 / Blake2b). Point DATUM
+            <code>bitcoind</code> RPC at it. Experimental pool — no back-pay if we go down.
+          </div>
+
+          <div class="rules">
+            <h3>Checklist</h3>
+            <ul>
+              <li><strong>Knots:</strong> mainnet · Blake2b · BIP110 RC4 · synced · RPC for DATUM.</li>
+              <li><strong>Start9 DATUM:</strong> sideload <code>pow_0.4.1_20</code> (see above).</li>
+              <li><strong>DATUM → pool:</strong> <code>pool_host=tides.maveth.ca</code> <code>pool_port=28916</code> (LAN: NAS IP).</li>
+              <li><strong>Payout:</strong> <code>mining.pool_address</code> = your <code>bc1…</code> / <code>1…</code>.</li>
+              <li><strong>Tag:</strong> <code>coinbase_tag_secondary</code> = your name; primary is <code>TIDES</code>.</li>
+              <li><strong>Miners:</strong> worker name only (e.g. <code>rig1</code>) → your Gateway stratum — never port <code>28916</code>.</li>
+              <li><strong>Fallback:</strong> keep solo / another pool configured.</li>
+            </ul>
+          </div>
+        </div>
+      </details>
+
       <div class="cards" id="poolCards">Loading…</div>
 
-      <div class="join box" id="joinBox">
-        <h2>Join (your DATUM → this pool)</h2>
-        <p class="muted">GPUs point at <strong>your</strong> Gateway. Your Gateway uses these pool settings:</p>
-        <pre id="joinPre">Loading…</pre>
-        <p class="muted"><code>pool_pubkey</code> can be left empty on MaVeTh Blake DATUM builds (auto-fetch from this site). Others: paste the pubkey once.</p>
-      </div>
-
-
       <div class="box" id="coinbaserBox">
-        <h2>Suggested coinbase <span class="muted">(TIDES split)</span></h2>
-        <p class="muted">What Prime would pay if a block were found now — includes bech32 (<code>tb1…</code>) miner addresses as-is.</p>
+        <h2>If we find a block now</h2>
+        <p class="muted">Current split from TIDES (Prime). Your Gateway must mine these outs (95% miners by work; 5% fee — 80% of fee / ~4% ≈ <strong class="kind-finder-inline">0.125 BTC</strong> finder bonus on the highlighted <strong class="kind-finder-inline">tides+finder</strong> line, ops keep ~1%).</p>
+        <p class="muted" id="coinbaserNote"></p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Kind</th><th>Address</th><th>Amount</th></tr>
+              <tr><th>Kind</th><th>Worker</th><th>Address</th><th>Amount</th></tr>
             </thead>
-            <tbody id="coinbaserBody"><tr><td colspan="3">Loading…</td></tr></tbody>
+            <tbody id="coinbaserBody"><tr><td colspan="4">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
 
       <div class="grid-2">
         <div>
-          <h2>Contributors <span class="muted">(TIDES window)</span></h2>
+          <h2>Contributors</h2>
+          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work.</p>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>#</th><th>Address</th><th>Shares</th><th>Work <span class="muted">(diff‑1)</span></th><th>~H/s</th><th>Share %</th></tr>
+                <tr><th>#</th><th>Address</th><th>Shares</th><th>Work</th><th>~H/s</th><th>Payout %</th></tr>
               </thead>
               <tbody id="contribBody"><tr><td colspan="6">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
         <div>
-          <h2>Recent pool blocks</h2>
+          <h2>Recent pool blocks <span class="muted" style="font-weight:400;font-size:0.9rem">(last 8 · orphans shown in red)</span></h2>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Height</th><th>Finder</th><th>Reward</th><th>Diff</th></tr>
+                <tr><th>Height</th><th>Status</th><th>Finder</th><th>Reward</th><th>Diff</th></tr>
               </thead>
-              <tbody id="blocksBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+              <tbody id="blocksBody"><tr><td colspan="5">Loading…</td></tr></tbody>
             </table>
           </div>
+          <p class="more-link"><a href="/blocks">More blocks →</a></p>
         </div>
       </div>
 
-      <p class="footnote">
-        Fee <strong id="fnFee">…</strong> · <strong id="fnFinder">…</strong> of fee to previous block finder (next coinbase) ·
-        ops keep <strong id="fnOps">…</strong> of block · window ≈ <strong id="fnWindow">…</strong> (Ocean TIDES).
-        <br />
-        <strong>Work</strong> = sum of Diff1 share units in the TIDES window (payout weight).
-        <strong>~H/s</strong> ≈ Σ(work)×2³² / 10 min (rough; at vardiff floor many shares are work=4).
-      </p>
+      <p class="footnote" id="feeFootnote">Loading fee schedule…</p>
+    </section>
+
+    <section id="blocksView" class="hidden">
+      <p><a href="/">&larr; Pool</a></p>
+      <h1>Pool blocks</h1>
+      <p class="muted">Newest first · up to 100 recent finds (confirmed, pending, orphaned).</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Height</th><th>Status</th><th>Finder</th><th>Reward</th><th>Diff</th></tr>
+          </thead>
+          <tbody id="blocksAllBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="userView" class="hidden">
@@ -99,6 +160,6 @@
     · <a href="/docs">API</a>
     · <a href="/health">health</a>
   </footer>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260901i"></script>
 </body>
 </html>

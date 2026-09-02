@@ -18,14 +18,20 @@ class PoolStats(BaseModel):
     window_work_filled: int = 0
     addresses_in_window: int = 0
     last_pool_block_height: int | None = None
+    blocks_last_24h: int = 0  # confirmed + pending only (orphans excluded)
+    orphans_last_24h: int = 0
     chain_height: int | None = None
     block_difficulty: int = 1
     reward_estimate_sats: int = 0
     pending_finder_address: str | None = None
     pending_finder_credit_sats: int = 0
-    fee_bps: int = 500
+    fee_bps: int = 1000
     finder_fee_share_bps: int = 8000
     window_blocks: int = 8
+    window_mode: str = "pool_finds"  # last N confirmed pool finds
+    window_confirmed_finds: int = 0
+    window_cutoff_seq: int | None = None
+    block_confirmations: int = 2
     network: str = "testnet4"
     pool_name: str = "TIDES lab"
     pool_ops_address: str = ""
@@ -54,6 +60,10 @@ class UserStats(BaseModel):
     pending_finder_credit_sats: int = 0
     share_count_shown: int = 0
     workers: list[str] = Field(default_factory=list)
+    quarantined: bool = False
+    quarantine_reason: str | None = None
+    reject27_recent: int = 0
+    attempt_recent: int = 0
 
 
 class ShareOut(BaseModel):
@@ -71,6 +81,8 @@ class Contributor(BaseModel):
     share_pct: float
     shares: int = 0
     hashrate_hs: float = 0.0
+    quarantined: bool = False
+    quarantine_reason: str | None = None
 
 
 class BlockOut(BaseModel):
@@ -80,12 +92,16 @@ class BlockOut(BaseModel):
     reward_sats: int
     finder_address: str | None
     accounted_at: datetime
+    status: str = "confirmed"
+    orphan_reason: str | None = None
+    share_head_seq: int | None = None
 
 
 class CoinbaseOutput(BaseModel):
     address: str
     sats: int
     kind: str = "tides"
+    name: str = ""  # stratum worker name for this payout address, when known
 
 
 class CoinbaserResponse(BaseModel):

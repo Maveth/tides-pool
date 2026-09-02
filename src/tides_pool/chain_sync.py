@@ -1,4 +1,4 @@
-"""Pull tip / difficulty / subsidy estimate from RC2 Knots into pool meta."""
+"""Pull tip / difficulty / subsidy estimate from Knots into pool meta; confirm pool finds."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from tides_pool.bitcoin_rpc import BitcoinRPC, BitcoinRPCError
+from tides_pool.block_confirm import reconcile_pool_blocks
 from tides_pool.config import Settings
 from tides_pool.store import Store
 
@@ -44,11 +45,18 @@ async def sync_once(store: Store, settings: Settings) -> dict:
     if data.get("networkhashps") is not None:
         await store.set_meta("networkhashps", str(data["networkhashps"]))
     log.info(
-        "RC2 sync: height=%s diff=%s subsidy≈%s",
+        "chain sync: height=%s diff=%s subsidy≈%s",
         data["height"],
         int(data["difficulty"]),
         data["reward_estimate_sats"],
     )
+    try:
+        recon = await reconcile_pool_blocks(store, settings)
+        if recon.get("checked"):
+            log.info("block reconcile: %s", recon)
+            data["reconcile"] = recon
+    except Exception as exc:  # noqa: BLE001
+        log.warning("block reconcile failed: %s", exc)
     return data
 
 

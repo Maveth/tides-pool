@@ -112,19 +112,49 @@ def test_coinbase_suggestion_fee_split():
         reward_sats=1_000_000,
         block_difficulty=12,
         window_blocks=8,
-        miner_bps=9500,
+        miner_bps=9000,
         min_output_sats=0,
     )
-    # ops = 50k fee bucket; pay 40k finder credit to bob (previous finder)
+    # ops = 100k; pay 80k finder credit to bob (previous finder)
     outs = coinbase_suggestion(
         tides,
         pool_ops_address="ops",
         finder_address="bob",
-        finder_credit_sats=40_000,
+        finder_credit_sats=80_000,
         min_output_sats=0,
     )
     by = {o["address"]: o["sats"] for o in outs}
-    assert by["ops"] == 10_000
-    assert by["bob"] == 475_000 + 40_000  # tides half of 950k + finder
-    assert by["alice"] == 475_000
+    assert by["ops"] == 20_000
+    assert by["bob"] == 450_000 + 80_000  # tides half of 900k + finder
+    assert by["alice"] == 450_000
     assert sum(by.values()) == 1_000_000
+
+
+def test_window_rotates_old_shares_out():
+    """As new work arrives, older shares fall out of the 8×diff window."""
+    # window = 8 * 10 = 80
+    alice = [
+        Share(seq=8, address="alice", work=20),
+        Share(seq=7, address="alice", work=20),
+        Share(seq=6, address="alice", work=20),
+        Share(seq=5, address="alice", work=20),
+    ]
+    bob_on_top = [
+        Share(seq=12, address="bob", work=20),
+        Share(seq=11, address="bob", work=20),
+        Share(seq=10, address="bob", work=20),
+        Share(seq=9, address="bob", work=20),
+    ] + alice
+    w = select_window(bob_on_top, block_difficulty=10, window_blocks=8)
+    assert all(s.address == "bob" for s in w)
+    assert not any(s.address == "alice" for s in w)
+    split = split_reward(
+        bob_on_top,
+        reward_sats=8000,
+        block_difficulty=10,
+        window_blocks=8,
+        miner_bps=9000,
+        min_output_sats=0,
+    )
+    assert {ln.address for ln in split.lines} == {"bob"}
+

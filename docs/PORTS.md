@@ -7,12 +7,12 @@
 | DATUM2 stratum | `tcp://192.168.0.143:23336` | GPU only |
 | DATUM Prime | `192.168.0.143:28916` | Encrypted pool_host (Gateway→pool) |
 | Solo DATUM (MaVeTh) | stratum `:23335`, UI `:7154` | ASICs — leave alone |
-| RC2 Knots RPC | `192.168.0.143:48332` | LAN only |
+| RC3 Knots RPC | `192.168.0.143:48332` | LAN only |
 
 ## DATUM2 mode
 
 - Container: `bip110-datum-pool`
-- `datum.pool_host` = **`192.168.0.143:28916`** (LAN IP) → **talking to tides-pool Prime** (pooled coinbaser + share submit). Do **not** use `tides.maveth.ca` for the house Gateway — public DNS stalls the DATUM handshake and falls back to Non-Pooled (single 50 BTC `mining.pool_address`).
+- `datum.pool_host` = `127.0.0.1:28916` → **talking to tides-pool Prime** (pooled coinbaser + share submit)
 - `pooled_mining_only` = **false** → if Prime dies, Gateway can fall back to 100% `mining.pool_address` (safer for lab). Set **true** for Ocean-strict (disconnect miners if pool unreachable).
 - Coinbase **primary tag** when pooled: comes from Prime `0x99` configure → **`TIDES`** (Ocean-style override). Local JSON also has `TIDES` / `MaVeTh`.
 
@@ -22,7 +22,7 @@ See `docs/WALLETS.md`. Quick map:
 
 | Role | Address | Backup folder |
 |------|---------|----------------|
-| **Pool fee 1%** | `mqKdiu…` | `wallets\tides_pool_fee_tn4\` |
+| **Pool fee 2%** | `mqKdiu…` | `wallets\tides_pool_fee_tn4\` |
 | GPU miner A | `n1Qve…` | `wallets\tides_gpu1_tn4\` |
 | Miner B | `mfh5a…` | `wallets\tides_pool_tn4\` |
 | Solo MaVeTh | `mqMY6…` | `wallets\maveth_tn4_*` |

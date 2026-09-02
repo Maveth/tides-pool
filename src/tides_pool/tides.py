@@ -17,7 +17,7 @@ class Share:
     seq: int
     address: str
     work: int  # difficulty-1 equivalent units (>= 1)
-    fee_bps: int = 500  # fee tagged at share time (default matches Settings)
+    fee_bps: int = 1000  # fee tagged at share time
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,11 +43,31 @@ class TidesSplit:
 
 
 def window_size(block_difficulty: int, window_blocks: int = 8) -> int:
+    """Legacy Ocean-style target (difficulty × N). Kept for reference/tests."""
     if block_difficulty < 1:
         raise ValueError("block_difficulty must be >= 1")
     if window_blocks < 1:
         raise ValueError("window_blocks must be >= 1")
     return block_difficulty * window_blocks
+
+
+def window_since_seq(
+    shares_newest_first: Sequence[Share],
+    cutoff_seq: int | None,
+) -> list[Share]:
+    """Payout window = shares newer than cutoff (after the Nth-last confirmed find).
+
+    cutoff_seq=None means fewer than N confirmed finds → keep the whole log.
+    """
+    if cutoff_seq is None:
+        return list(shares_newest_first)
+    out: list[Share] = []
+    for s in shares_newest_first:
+        if s.work < 1:
+            raise ValueError(f"share seq={s.seq} has non-positive work")
+        if s.seq > cutoff_seq:
+            out.append(s)
+    return out
 
 
 def select_window(
@@ -56,11 +76,7 @@ def select_window(
     block_difficulty: int,
     window_blocks: int = 8,
 ) -> list[Share]:
-    """Walk from the job-issue head (newest) backward until window work is filled.
-
-    `shares_newest_first[0]` must be the share-log head at **job issue** time
-    (Ocean anti-cheat), not necessarily wall-clock find time.
-    """
+    """Legacy Ocean walk by work. Prefer window_since_seq for pool-find windows."""
     target = window_size(block_difficulty, window_blocks)
     selected: list[Share] = []
     acc = 0
@@ -90,8 +106,14 @@ def split_reward(
     miner_bps: int = 9000,
     min_output_sats: int = 0,
     pool_ops_address: str = "",
+    cutoff_seq: int | None = None,
+    window_mode: str = "pool_finds",
 ) -> TidesSplit:
     """Split `reward_sats` using TIDES.
+
+    window_mode:
+      - "pool_finds": shares with seq > cutoff_seq (cutoff None = all shares)
+      - "ocean_work": legacy select_window by difficulty × window_blocks
 
     - miner_bps: portion of reward for miners after pool fee (e.g. 9000 = 90%).
     - Per-share fee flags are applied as: each share's contribution to the miner
@@ -107,11 +129,14 @@ def split_reward(
     if not (0 <= miner_bps <= 10_000):
         raise ValueError("miner_bps out of range")
 
-    window = select_window(
-        shares_newest_first,
-        block_difficulty=block_difficulty,
-        window_blocks=window_blocks,
-    )
+    if window_mode == "ocean_work":
+        window = select_window(
+            shares_newest_first,
+            block_difficulty=block_difficulty,
+            window_blocks=window_blocks,
+        )
+    else:
+        window = window_since_seq(shares_newest_first, cutoff_seq)
     if not window:
         ops = reward_sats
         return TidesSplit(

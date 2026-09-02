@@ -1,3 +1,10 @@
+function quarantineBadge(c) {
+  if (!c || !c.quarantined) return "";
+  const tip = (c.quarantine_reason || "coinbase mismatch / reject-27")
+    .replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  return ` <span class="badge-quarantine" title="${tip}">⚠ quarantined</span>`;
+}
+
 function fmtInt(n) {
   return Number(n || 0).toLocaleString();
 }
@@ -24,6 +31,21 @@ function shortAddr(a) {
   return a.slice(0, 8) + "…" + a.slice(-6);
 }
 
+function mempoolBase(info) {
+  const u = (info && info.mempool_explorer_url) || window.MEMPOOL_URL || "https://mempool.maveth.ca";
+  return String(u).replace(/\/$/, "");
+}
+
+function mempoolBlockHref(b, info) {
+  const base = mempoolBase(info);
+  const hash = b && b.block_hash ? String(b.block_hash) : "";
+  if (hash && !hash.startsWith("pool-") && /^[0-9a-fA-F]{64}$/.test(hash)) {
+    return base + "/block/" + hash;
+  }
+  return base + "/block/" + b.height;
+}
+
+
 function qs(name) {
   return new URLSearchParams(location.search).get(name);
 }
@@ -38,124 +60,218 @@ function card(label, value, mono) {
   return `<div class="card"><div class="label">${label}</div><div class="value${mono ? " mono" : ""}">${value}</div></div>`;
 }
 
-async function loadPool() {
-  const [stats, contrib, blocks, info, coinbaser] = await Promise.all([
-    jget("/api/stats"),
-    jget("/api/contributors?limit=50"),
-    jget("/api/blocks?limit=20"),
-    jget("/api/info"),
-    jget("/api/coinbaser"),
-  ]);
+function bpsPct(bps) {
+  const n = Number(bps || 0);
+  // Show one decimal only when needed (e.g. 12.5%)
+  const pct = n / 100;
+  return (Number.isInteger(pct) ? String(pct) : pct.toFixed(1)) + "%";
+}
 
-  // Footnote is driven by /api/stats (fee_bps / finder_fee_share_bps), not hardcoded.
-  const pct = (bps) => {
-    const v = bps / 100;
-    return (Number.isInteger(v) ? v : Number(v.toFixed(2))) + "%";
-  };
-  const setTxt = (id, v) => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = v;
-  };
-  setTxt("fnFee", pct(stats.fee_bps));
-  setTxt("fnFinder", pct(stats.finder_fee_share_bps));
-  setTxt("fnOps", pct(stats.fee_bps * (10000 - stats.finder_fee_share_bps) / 10000));
-  setTxt("fnWindow", stats.window_blocks + " × difficulty");
+function renderFeeFootnote(stats) {
+  const el = document.getElementById("feeFootnote");
+  if (!el) return;
+  const fee = Number(stats.fee_bps ?? 500);
+  const finderShare = Number(stats.finder_fee_share_bps ?? 8000);
+  const windowBlocks = Number(stats.window_blocks ?? 8);
+  const paidInWindow = Math.max(windowBlocks - 1, 0);
+  const finderOfBlock = Math.floor((fee * finderShare) / 10000);
+  const opsOfBlock = fee - finderOfBlock;
+  const mode = stats.window_mode || "pool_finds";
+  const confFinds = Number(stats.window_confirmed_finds ?? 0);
+  const windowLabel =
+    mode === "pool_finds"
+      ? `window = <strong>${paidInWindow} confirmed + current</strong>` +
+        ` (cutoff = ${windowBlocks}th-last find` +
+        (confFinds ? `; have ${confFinds} confirmed` : "") +
+        `) · orphans do not count`
+      : `window ≈ <strong>${windowBlocks}×</strong> network difficulty`;
+  el.innerHTML =
+    `Fee <strong>${bpsPct(fee)}</strong> of each block · <strong>${bpsPct(finderShare)}</strong> of that fee goes to the previous finder on the <em>next</em> block · ` +
+    `ops keep <strong>${bpsPct(opsOfBlock)}</strong> of the block · ${windowLabel}.` +
+    `<br />` +
+    `<strong>Payout weight</strong> = sum of each share’s difficulty (work), not share count. A diff‑4096 share counts twice a diff‑2048 share. ` +
+    `<strong>~H/s</strong> is a rough estimate from recent work.`;
+}
 
-  document.getElementById("poolCards").innerHTML = [
-    card("Network", stats.network + (stats.rpc_ok ? " · RPC ok" : " · RPC ?")),
-    card("Chain tip (RC2)", stats.chain_height ?? "—"),
-    card("Difficulty", fmtInt(stats.block_difficulty)),
-    card("Window target", fmtInt(stats.window_work_target) + " work"),
-    card("Window filled", fmtInt(stats.window_work_filled)),
-    card("Addresses in window", fmtInt(stats.addresses_in_window)),
-    card("Share log work", fmtInt(stats.share_log_work)),
-    card("Shares accepted", fmtInt(stats.share_count)),
-    card(
-      "Est. pool hashrate",
-      fmtHashrate(stats.hashrate_hs) +
-        (stats.hashrate_window_sec
-          ? ` · ${fmtInt(stats.hashrate_shares)} shares / ${stats.hashrate_window_sec / 60}m`
-          : ""),
-      true
-    ),
-    card("Last pool block", stats.last_pool_block_height ?? "—"),
-    card("Est. subsidy", fmtSats(stats.reward_estimate_sats)),
-    card("Ops address", shortAddr(stats.pool_ops_address), true),
-    card(
-      "Addr work cap",
-      stats.address_work_cap
-        ? fmtInt(stats.address_work_cap) + " / " + (stats.address_work_cap_window_sec / 3600) + "h"
-        : "—",
-      true
-    ),
-    card(
-      "Pending finder credit",
-      stats.pending_finder_address
-        ? shortAddr(stats.pending_finder_address) + " · " + fmtSats(stats.pending_finder_credit_sats)
-        : "—",
-      true
-    ),
-  ].join("");
+function blockStatusBadge(b) {
+  const st = (b && b.status) || "confirmed";
+  if (st === "pending") return `<span class="badge badge-pending" title="Waiting for chain confirmations">pending</span>`;
+  if (st === "orphaned" || st === "misattributed") {
+    const why = b.orphan_reason ? ` — ${b.orphan_reason}` : "";
+    return `<span class="badge badge-orphan" title="Not on tip / no payout${why}">orphaned</span>`;
+  }
+  return `<span class="badge badge-ok">confirmed</span>`;
+}
 
+function finderBonusSats(rewardEst) {
+  // 4% of block = 80% of the 5% fee (matches fee_bps=500, finder_fee_share_bps=8000)
+  return Math.floor(Number(rewardEst || 0) * 0.04);
+}
 
+function kindCell(o, rewardEst) {
+  const k = (o && o.kind) || "—";
+  if (k === "tides+finder") {
+    const bonus = finderBonusSats(rewardEst);
+    const bonusTxt = bonus > 0 ? ` · bonus ${fmtSats(bonus)}` : " · finder bonus";
+    return `<span class="kind-finder" title="This line is TIDES work share + previous-finder bonus (~4% of the block; 80% of the 5% fee)">tides+finder${bonusTxt}</span>`;
+  }
+  if (k === "ops") {
+    return `<span class="kind-ops" title="Pool ops fee keep (~1% when a finder bonus is active)">ops</span>`;
+  }
+  return k;
+}
+
+function renderCoinbaser(coinbaser) {
   const cbBody = document.getElementById("coinbaserBody");
-  if (cbBody) {
-    const outs = (coinbaser && coinbaser.outputs) || [];
-    if (!outs.length) {
-      cbBody.innerHTML = `<tr><td colspan="3" class="muted">No coinbaser outputs (empty window → ops only)</td></tr>`;
-    } else {
-      cbBody.innerHTML = outs
-        .map(
-          (o) => `<tr>
-          <td>${o.kind || "—"}</td>
-          <td class="mono"><a href="/address?a=${encodeURIComponent(o.address)}" title="${o.address}">${o.address}</a></td>
-          <td>${fmtSats(o.sats)}</td>
-        </tr>`
-        )
-        .join("");
+  const cbNote = document.getElementById("coinbaserNote");
+  if (!cbBody) return;
+  if (!coinbaser) {
+    cbBody.innerHTML = `<tr><td colspan="4" class="muted">Failed to load /api/coinbaser</td></tr>`;
+    if (cbNote) cbNote.textContent = "Coinbaser unavailable";
+    return;
+  }
+  const outs = coinbaser.outputs || [];
+  const finderOut = outs.find((o) => o.kind === "tides+finder");
+  const bonus = finderBonusSats(coinbaser.reward_sats_estimate);
+  if (cbNote) {
+    let note = outs.length
+      ? `~${fmtSats(coinbaser.reward_sats_estimate)} total · ${outs.length} payout line(s) · window work ${fmtInt(coinbaser.window_work)}`
+      : `No miner lines yet (~${fmtSats(coinbaser.reward_sats_estimate)}) — empty window pays ops only`;
+    if (finderOut && bonus > 0) {
+      note += ` · tides+finder includes ~${fmtSats(bonus)} finder bonus`;
     }
+    cbNote.textContent = note;
   }
-
-  const cbody = document.getElementById("contribBody");
-  if (!contrib.length) {
-    cbody.innerHTML = `<tr><td colspan="6" class="muted">No shares in window yet. Lab: POST /api/lab/share</td></tr>`;
-  } else {
-    cbody.innerHTML = contrib
-      .map(
-        (c, i) => `<tr>
-        <td>${i + 1}</td>
-        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${c.address}</a></td>
-        <td>${fmtInt(c.shares)}</td>
-        <td title="Sum of Diff1 share work in TIDES window">${fmtInt(c.work)}</td>
-        <td title="Rough hashrate from last 10 minutes of this address's shares">${fmtHashrate(c.hashrate_hs)}</td>
-        <td>${c.share_pct.toFixed(2)}%</td>
-      </tr>`
-      )
-      .join("");
+  if (!outs.length) {
+    cbBody.innerHTML = `<tr><td colspan="4" class="muted">No coinbaser outputs (empty window → ops only)</td></tr>`;
+    return;
   }
+  cbBody.innerHTML = outs
+    .map((o) => {
+      let rowClass = "";
+      if (o.kind === "tides+finder") rowClass = ' class="row-finder"';
+      else if (o.kind === "ops") rowClass = ' class="row-ops"';
+      const worker = (o.name || "").trim() || "—";
+      return `<tr${rowClass}>
+      <td>${kindCell(o, coinbaser.reward_sats_estimate)}</td>
+      <td title="Stratum worker for this payout address">${worker}</td>
+      <td class="mono"><a href="/address?a=${encodeURIComponent(o.address)}" title="${o.address}">${shortAddr(o.address)}</a></td>
+      <td>${fmtSats(o.sats)}</td>
+    </tr>`;
+    })
+    .join("");
+}
 
-  const bbody = document.getElementById("blocksBody");
+function renderBlocksTable(blocks, bodyId, info) {
+  const bbody = document.getElementById(bodyId);
+  if (!bbody) return;
   if (!blocks.length) {
-    bbody.innerHTML = `<tr><td colspan="4" class="muted">No pool blocks yet</td></tr>`;
-  } else {
-    bbody.innerHTML = blocks
-      .map(
-        (b) => `<tr>
-        <td>${b.height}</td>
+    bbody.innerHTML = `<tr><td colspan="5" class="muted">No pool blocks yet</td></tr>`;
+    return;
+  }
+  bbody.innerHTML = blocks
+    .map((b) => {
+      const st = (b && b.status) || "confirmed";
+      const orphaned = st === "orphaned" || st === "misattributed";
+      const pending = st === "pending";
+      let rowClass = "";
+      if (orphaned) rowClass = ' class="row-orphan"';
+      else if (pending) rowClass = ' class="row-pending"';
+      const reward = orphaned ? "-" : fmtSats(b.reward_sats);
+      const href = mempoolBlockHref(b, info);
+      const hashOk = b.block_hash && /^[0-9a-fA-F]{64}$/.test(String(b.block_hash));
+      const heightCell = hashOk
+        ? `<a class="mono" href="${href}" target="_blank" rel="noopener" title="${b.block_hash || ""}">${b.height}</a>`
+        : `<span class="mono" title="${b.block_hash || ""}">${b.height}</span>`;
+      return `<tr${rowClass}>
+        <td>${heightCell}</td>
+        <td>${blockStatusBadge(b)}</td>
         <td>${
           b.finder_address
             ? `<a class="truncate" href="/address?a=${encodeURIComponent(b.finder_address)}">${shortAddr(b.finder_address)}</a>`
             : "—"
         }</td>
-        <td>${fmtSats(b.reward_sats)}</td>
+        <td>${reward}</td>
         <td>${fmtInt(b.difficulty)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+async function loadPool() {
+  // Fetch coinbaser first so the suggested split is never stuck on "Loading…"
+  // if contributors/blocks are slow or fail.
+  let coinbaser = null;
+  try {
+    coinbaser = await jget("/api/coinbaser");
+  } catch (e) {
+    console.error(e);
+  }
+  renderCoinbaser(coinbaser);
+
+  const settled = await Promise.allSettled([
+    jget("/api/stats"),
+    jget("/api/contributors?limit=50"),
+    jget("/api/blocks?limit=8"),
+    jget("/api/info"),
+  ]);
+  const val = (i, fallback) =>
+    settled[i].status === "fulfilled" ? settled[i].value : fallback;
+  const stats = val(0, null);
+  const contrib = val(1, []);
+  const blocks = val(2, []);
+  const info = val(3, {});
+  if (!stats) {
+    throw settled[0].reason || new Error("stats failed");
+  }
+  for (let i = 1; i < settled.length; i++) {
+    if (settled[i].status === "rejected") {
+      console.error("pool partial load failed", settled[i].reason);
+    }
+  }
+
+  document.getElementById("poolCards").innerHTML = [
+    card("Chain tip", String(stats.chain_height ?? "—") + (stats.rpc_ok ? "" : " · RPC?")),
+    card("Pool hashrate", fmtHashrate(stats.hashrate_hs), true),
+    card("Miners in window", fmtInt(stats.addresses_in_window)),
+    card(
+      "Reward window",
+      `${fmtInt(Math.max(Number(stats.window_blocks ?? 8) - 1, 0))} + current`
+    ),
+    card(
+      "Blocks / last 24h",
+      Number(stats.orphans_last_24h || 0) > 0
+        ? `${fmtInt(stats.blocks_last_24h)} · ${fmtInt(stats.orphans_last_24h)} orphaned`
+        : fmtInt(stats.blocks_last_24h)
+    ),
+    card("Last pool block", stats.last_pool_block_height ?? "none yet"),
+  ].join("");
+  renderFeeFootnote(stats);
+
+  const cbody = document.getElementById("contribBody");
+  if (cbody && !contrib.length) {
+    cbody.innerHTML = `<tr><td colspan="6" class="muted">No shares in window yet</td></tr>`;
+  } else if (cbody) {
+    cbody.innerHTML = contrib
+      .map(
+        (c, i) => `<tr>
+        <td>${i + 1}</td>
+        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${c.address}</a>${quarantineBadge(c)}</td>
+        <td title="How many shares were accepted">${fmtInt(c.shares)}</td>
+        <td title="Payout weight = sum of share difficulties">${fmtInt(c.work)}</td>
+        <td title="Rough hashrate from recent shares">${fmtHashrate(c.hashrate_hs)}</td>
+        <td title="Your work ÷ window work">${Number(c.share_pct || 0).toFixed(2)}%</td>
       </tr>`
       )
       .join("");
   }
 
-  document.getElementById("footerMeta").textContent =
-    `${info.name} ${info.version} · ${stats.pool_name}`;
+  renderBlocksTable(blocks, "blocksBody", info);
+
+  const foot = document.getElementById("footerMeta");
+  if (foot) {
+    foot.textContent = `${info.name || "tides-pool"} ${info.version || ""} · ${stats.pool_name || ""}`;
+  }
 
   const j = info.join || {};
   const pre = document.getElementById("joinPre");
@@ -165,7 +281,7 @@ async function loadPool() {
         datum: {
           pool_host: j.pool_host || "tides.maveth.ca",
           pool_port: j.pool_port || 28916,
-          pool_pubkey: j.pool_pubkey || "(empty = auto-fetch on MaVeTh Blake DATUM)",
+          pool_pubkey: j.pool_pubkey || "(paste 128-hex pubkey — required)",
           pooled_mining_only: false,
         },
       },
@@ -175,20 +291,51 @@ async function loadPool() {
   }
 }
 
+async function loadBlocksPage() {
+  document.getElementById("poolView").classList.add("hidden");
+  document.getElementById("userView").classList.add("hidden");
+  document.getElementById("blocksView").classList.remove("hidden");
+  document.title = "TIDES · Pool blocks";
+
+  const settled = await Promise.allSettled([
+    jget("/api/blocks?limit=100"),
+    jget("/api/info"),
+    jget("/api/stats"),
+  ]);
+  const val = (i, fallback) =>
+    settled[i].status === "fulfilled" ? settled[i].value : fallback;
+  const blocks = val(0, []);
+  const info = val(1, {});
+  const stats = val(2, {});
+  if (settled[0].status === "rejected") {
+    throw settled[0].reason;
+  }
+  renderBlocksTable(blocks, "blocksAllBody", info);
+  const foot = document.getElementById("footerMeta");
+  if (foot) {
+    foot.textContent = `${info.name || "tides-pool"} ${info.version || ""} · ${stats.pool_name || ""}`;
+  }
+}
 
 async function loadUser(address) {
   document.getElementById("poolView").classList.add("hidden");
+  document.getElementById("blocksView").classList.add("hidden");
   document.getElementById("userView").classList.remove("hidden");
   document.getElementById("addrInput").value = address;
-  document.getElementById("userTitle").textContent = address;
-
   const [user, shares, stats] = await Promise.all([
     jget("/api/user/" + encodeURIComponent(address)),
     jget("/api/user/" + encodeURIComponent(address) + "/shares?limit=100"),
     jget("/api/stats"),
   ]);
+  document.getElementById("userTitle").innerHTML =
+    address + (user.quarantined ? quarantineBadge(user) : "");
+
+  const qCard = user.quarantined
+    ? card("Quarantine", user.quarantine_reason || "new shares frozen (coinbase mismatch)", true)
+    : card("Reject-27 (last 20)", `${user.reject27_recent || 0} / ${user.attempt_recent || 0}`);
 
   document.getElementById("userCards").innerHTML = [
+    qCard,
     card("Share of window", user.share_pct.toFixed(4) + "%"),
     card("Work in window", fmtInt(user.work_in_window)),
     card("Est. next block payout", fmtSats(user.estimated_next_sats)),
@@ -223,11 +370,27 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
 
 (async function main() {
   const a = qs("a");
+  const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
+  const onBlocks = path === "/blocks";
+
+  // Always try coinbaser first / standalone so the payout table cannot stick on Loading.
+  if (!a && !onBlocks) {
+    try {
+      renderCoinbaser(await jget("/api/coinbaser"));
+    } catch (e) {
+      console.error("coinbaser bootstrap", e);
+      renderCoinbaser(null);
+    }
+  }
   try {
-    if (a) await loadUser(a);
+    if (onBlocks) await loadBlocksPage();
+    else if (a) await loadUser(a);
     else await loadPool();
   } catch (err) {
     console.error(err);
-    document.getElementById("poolCards").textContent = "Failed to load: " + err.message;
+    const el =
+      document.getElementById(onBlocks ? "blocksAllBody" : "poolCards") ||
+      document.getElementById("poolCards");
+    if (el) el.textContent = "Failed to load: " + err.message;
   }
 })();

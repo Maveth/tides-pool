@@ -1,6 +1,6 @@
 # tides-pool
 
-**DATUM Prime + TIDES** mining pool server (lab / TN4 Blake2b).
+**DATUM Prime + TIDES** mining pool server (lab / **TN4 Blake2b · Catbus RC3**).
 
 This is the **pool** side. Miners do **not** stratum to this host for work templates.
 
@@ -39,6 +39,10 @@ Empty `pool_pubkey` works on MaVeTh Blake Gateway builds (auto-fetch from
 `https://<pool_host>/api/pool_pubkey`). Paste the pubkey on other builds.
 
 Stats: **https://tides.maveth.ca/**
+
+### Payout address required
+
+Stratum username **must** be a valid TN4 Bitcoin address (`tb1…` / legacy `m`/`n`/`2…`), optionally `ADDRESS.worker`. Non-addresses (e.g. `box2`) are rejected with `BAD_USERNAME` — no TIDES credit.
 
 ## Run (TrueNAS / Docker)
 

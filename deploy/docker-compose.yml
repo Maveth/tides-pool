@@ -3,6 +3,9 @@
 #
 # UI:   host :8088
 # Prime: host :28916  (DATUM Gateways set pool_host + pool_port)
+#
+# Defaults below match current MaVeTh mainnet TIDES/Prime ops (fee 5%,
+# finder 80% of fee, window_blocks=8, min share diff 2048). Override via env.
 
 services:
   postgres:
@@ -14,6 +17,7 @@ services:
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
       - ../sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ../sql/002_block_status.sql:/docker-entrypoint-initdb.d/002_block_status.sql:ro
     ports:
       - "5433:5432"
     healthcheck:
@@ -31,11 +35,11 @@ services:
       TIDES_DATABASE_URL: postgresql://tides:${POSTGRES_PASSWORD:-tides}@postgres:5432/tides
       TIDES_HOST: 0.0.0.0
       TIDES_PORT: 8080
-      TIDES_NETWORK: ${TIDES_NETWORK:-testnet4}
+      TIDES_NETWORK: ${TIDES_NETWORK:-main}
       TIDES_FEE_BPS: "500"
       TIDES_FINDER_FEE_SHARE_BPS: "8000"
       TIDES_WINDOW_BLOCKS: "8"
-      TIDES_POOL_OPS_ADDRESS: ${TIDES_POOL_OPS_ADDRESS:?set fee address}
+      TIDES_POOL_OPS_ADDRESS: ${TIDES_POOL_OPS_ADDRESS:?set fee/ops address}
       TIDES_COINBASE_TAG_PRIMARY: TIDES
       TIDES_COINBASE_TAG_SECONDARY: ${TIDES_COINBASE_TAG_SECONDARY:-Maveth_tides}
       TIDES_BITCOIN_RPC_URL: ${TIDES_BITCOIN_RPC_URL:?set knots rpc url}
@@ -43,11 +47,13 @@ services:
       TIDES_BITCOIN_RPC_PASSWORD: ${TIDES_BITCOIN_RPC_PASSWORD:?set rpc password}
       TIDES_CHAIN_SYNC_SECONDS: "15"
       TIDES_DATUM_PRIME_PORT: "28916"
-      TIDES_MIN_SHARE_DIFFICULTY: "4"
+      TIDES_MIN_SHARE_DIFFICULTY: "2048"
       TIDES_GPU_BASELINE_HASHRATE_HS: "2500000000"
-      TIDES_ADDRESS_WORK_CAP_MULTIPLIER: "20"
+      TIDES_ADDRESS_WORK_CAP_MULTIPLIER: "0"
       TIDES_ADDRESS_WORK_CAP_WINDOW_SEC: "3600"
       TIDES_POOL_KEYS_PATH: "/app/data/pool_keys.json"
+      TIDES_MEMPOOL_EXPLORER_URL: ${TIDES_MEMPOOL_EXPLORER_URL:-https://mempool.maveth.ca}
+      TIDES_BLOCK_CONFIRMATIONS: "2"
     volumes:
       - ./data:/app/data:rw
     ports:

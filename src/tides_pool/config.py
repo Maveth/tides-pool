@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Postgres
     database_url: str = "postgresql://tides:tides@localhost:5432/tides"
 
-    # Knots / bitcoind RPC (RC2 TN4)
+    # Knots / bitcoind RPC (RC3 TN4)
     bitcoin_rpc_url: str = "http://192.168.0.143:48332"
     bitcoin_rpc_user: str = "datum"
     bitcoin_rpc_password: str = "YOUR_LAB_PASSWORD"
@@ -22,36 +22,53 @@ class Settings(BaseSettings):
     chain_sync_seconds: int = 15
 
     # TIDES / fees (basis points of block reward)
+    # window_blocks = how many *confirmed pool finds* keep shares in the payout window.
+    # Orphans/misattributed finds do NOT count. (Not Ocean's 8×network-difficulty work.)
     window_blocks: int = Field(default=8, ge=1, le=32)
+    block_confirmations: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description="Chain blocks after a find before confirm/orphan verdict",
+    )
     fee_bps: int = Field(default=500, description="5% = 500 bps")
     finder_fee_share_bps: int = Field(
-        default=8000,
-        description="Of the pool fee, 80% goes to previous finder (4% of block); ops keep 20% of fee (1% of block)",
+        default=5000,
+        description="Of the pool fee, 50% goes to previous finder (next coinbase)",
     )
 
     # Coinbase / dust
     min_output_sats: int = 1000
-    # Dedicated fee-keep address (1% of block when finder bonus is active; 5% if no prior finder yet)
+    # Dedicated fee-keep address (2.5% of block when finder bonus is active; 5% if no prior finder yet)
     pool_ops_address: str = "mqKdiu6W825MWc31NACiwxRchTb4dP2NRH"
     coinbase_tag_primary: str = "TIDES"
     coinbase_tag_secondary: str = "MaVeTh"
+
+    # Block explorer for Recent pool blocks links (lab mempool UI)
+    mempool_explorer_url: str = "https://mempool.maveth.ca"
 
     # Share validation / DATUM configure override_vardiff_min
     min_share_difficulty: float = 4.0
     network: str = "testnet4"
 
-    # Per-address work cap (GPU-friendly pool)
-    # Expected work/s ≈ hashrate / 2^32. Baseline 2.5 GH/s → ~2095 work/hour;
-    # 20× cap → ~41910 work/hour credited per address (rolling window).
+    # Per-address work cap (0 multiplier = disabled → normal pool, full ASIC credit)
+    # Expected work/s ≈ hashrate / 2^32. Baseline used only when multiplier > 0.
     gpu_baseline_hashrate_hs: float = 2.5e9
-    address_work_cap_multiplier: float = 20.0
+    address_work_cap_multiplier: float = 0.0
     address_work_cap_window_sec: int = 3600
 
     # DATUM Prime listen (encrypted Gateway pool_host protocol)
     datum_prime_port: int = 28916
 
+    # Quarantine: freeze NEW shares if miner mostly fails coinbaser check
+    quarantine_reject27_ratio: float = 0.5
+    quarantine_reject27_window: int = 20
+    quarantine_reject27_min_samples: int = 3
+
     def address_work_cap(self) -> int:
-        """Max difficulty-1 work units credited per address per rolling window."""
+        """Max Diff1 work credited per address per window. 0 = unlimited (no ASIC throttle)."""
+        if self.address_work_cap_multiplier <= 0:
+            return 0
         work_per_sec = self.gpu_baseline_hashrate_hs / float(2**32)
         raw = work_per_sec * self.address_work_cap_window_sec * self.address_work_cap_multiplier
         return max(int(raw), 1)

@@ -19,8 +19,9 @@ from nacl.public import Box, PrivateKey, PublicKey, SealedBox
 from nacl.signing import SigningKey, VerifyKey
 from nacl.exceptions import BadSignatureError, CryptoError
 
-from tides_pool.addresses import address_to_script
+from tides_pool.addresses import address_to_script, is_valid_payout_address
 from tides_pool.config import Settings, finder_credit_bps, miner_reward_bps
+from tides_pool.bitcoin_rpc import BitcoinRPC
 from tides_pool.store import Store
 from tides_pool.tides import coinbase_suggestion, split_reward
 
@@ -28,6 +29,23 @@ from tides_pool.tides import coinbase_suggestion, split_reward
 log = logging.getLogger("tides_pool.datum_prime")
 
 AcceptShareCb = Callable[[str, int, str | None], Awaitable[None]]
+
+# DATUM reject reason codes (protocol)
+DATUM_REJECT_BAD_COINBASE_ID = 11
+DATUM_REJECT_BAD_USERNAME = 14
+DATUM_REJECT_BAD_COINBASE_OUTPUTS = 27
+DATUM_REJECT_OTHER = 30
+
+DATUM_POW_ACCEPTED = 0x50
+DATUM_POW_REJECTED = 0x66
+
+# 0x27 flags
+FLAG_IS_BLOCK = 0x01
+FLAG_SUBSIDY_ONLY = 0x02
+
+
+class HandshakeError(RuntimeError):
+    """Non-DATUM / bad first packet — common internet probe noise."""
 
 
 def script_for_address(addr: str, fallback_ops: str) -> bytes:
@@ -178,6 +196,40 @@ class DatumPrimeSession:
         self.session_sign: SigningKey | None = None
         self.configured = False
         self.coinbaser_id = 1
+        # coinbaser_id → {"n_value_outs": int} for recent assignments (lag-tolerant)
+        self.recent_coinbasers: dict[int, dict] = {}
+
+    def _remember_coinbaser(self, cid: int, n_value_outs: int) -> None:
+        self.recent_coinbasers[cid & 0xFF] = {"n_value_outs": int(n_value_outs)}
+        # keep a small ring so lagged Gateways still validate
+        while len(self.recent_coinbasers) > 12:
+            oldest = next(iter(self.recent_coinbasers))
+            self.recent_coinbasers.pop(oldest, None)
+
+    def _assigned_multi_out(self) -> bool:
+        """True if any recent coinbaser had ≥2 value payouts (fair split, not ops-only)."""
+        return any(int(v.get("n_value_outs") or 0) >= 2 for v in self.recent_coinbasers.values())
+
+    async def _maybe_quarantine(self, address: str, *, is_block: bool) -> bool:
+        """Return True if address is (or becomes) quarantined — freeze new share credit."""
+        q = await self.store.get_quarantine(address)
+        if q:
+            return True
+        win = int(getattr(self.settings, "quarantine_reject27_window", 20) or 20)
+        ratio = float(getattr(self.settings, "quarantine_reject27_ratio", 0.5) or 0.5)
+        min_n = int(getattr(self.settings, "quarantine_reject27_min_samples", 3) or 3)
+        rej, total = await self.store.recent_attempt_stats(address, limit=win)
+        reason = None
+        # Block/payout mismatch: reject that share + no finder (caller already did).
+        # Do NOT quarantine on a single bad block — only on sustained reject-27 rate.
+        if total >= min_n and (rej / float(total)) >= ratio:
+            reason = f"reject-27 rate {rej}/{total} over last {win} attempts"
+        if reason:
+            await self.store.set_quarantine(address, reason)
+            log.warning("QUARANTINE address=%s reason=%s", address, reason)
+            return True
+        return False
+
 
     async def _read_exact(self, n: int) -> bytes:
         return await self.reader.readexactly(n)
@@ -236,14 +288,16 @@ class DatumPrimeSession:
         hdr_plain = xor_header(hdr_raw, 0xDC871829)
         h = unpack_header(hdr_plain)
         if h["proto_cmd"] != 1 or not h["is_encrypted_pubkey"]:
-            raise RuntimeError(f"expected hello cmd1 sealed, got {h}")
+            raise HandshakeError(
+                f"expected hello cmd1 sealed, got cmd={h.get('proto_cmd')} enc_pub={h.get('is_encrypted_pubkey')}"
+            )
         ct = await self._read_exact(h["cmd_len"])
         try:
             opened = SealedBox(self.pool_keys.box_sk).decrypt(ct)
         except CryptoError as e:
-            raise RuntimeError(f"hello seal open failed: {e}") from e
+            raise HandshakeError(f"hello seal open failed: {e}") from e
         if len(opened) < 64 + 128:
-            raise RuntimeError("hello too short")
+            raise HandshakeError("hello too short")
         msg, sig = opened[:-64], opened[-64:]
         client_lt_ed = msg[0:32]
         client_lt_x = msg[32:64]
@@ -253,14 +307,14 @@ class DatumPrimeSession:
         try:
             fe = msg.index(0xFE, 128)
         except ValueError as e:
-            raise RuntimeError("hello missing 0xFE") from e
+            raise HandshakeError("hello missing 0xFE") from e
         if fe + 5 > len(msg):
-            raise RuntimeError("hello missing nk")
+            raise HandshakeError("hello missing nk")
         nk = struct.unpack_from("<I", msg, fe + 1)[0]
         try:
             VerifyKey(client_lt_ed).verify(msg, sig)
         except BadSignatureError as e:
-            raise RuntimeError("hello signature bad") from e
+            raise HandshakeError("hello signature bad") from e
 
         # keys / nonces
         self.recv_hdr_key = header_xor_feedback(nk)  # client→server
@@ -333,6 +387,7 @@ class DatumPrimeSession:
             block_diff = max(int(float(diff_meta)), 1)
         except ValueError:
             block_diff = 1
+        cutoff = await self.store.payout_window_cutoff_seq(self.settings.window_blocks)
         tides = split_reward(
             shares,
             reward_sats=value,
@@ -341,6 +396,8 @@ class DatumPrimeSession:
             miner_bps=miner_reward_bps(self.settings),
             min_output_sats=self.settings.min_output_sats,
             pool_ops_address=self.settings.pool_ops_address,
+            cutoff_seq=cutoff,
+            window_mode="pool_finds",
         )
         finder, credit = await self.store.pending_finder_credit()
         outs = coinbase_suggestion(
@@ -354,9 +411,11 @@ class DatumPrimeSession:
             outs = [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
 
         blob = bytearray()
-        blob.append(self.coinbaser_id & 0xFF)
+        sent_id = self.coinbaser_id & 0xFF
+        blob.append(sent_id)
         self.coinbaser_id = (self.coinbaser_id % 250) + 1
         assigned = 0
+        n_value_outs = 0
         detail: list[str] = []
         ops = self.settings.pool_ops_address
         for o in outs:
@@ -368,11 +427,22 @@ class DatumPrimeSession:
             if sats <= 0:
                 break
             addr = str(o.get("address") or ops)
+            # Never emit an unencodable scriptPubKey. Invalid share usernames
+            # (e.g. 'box2') are rejected at _pow; this is defense-in-depth so
+            # any leftover junk folds into the ops output instead of a bad script.
+            if not is_valid_payout_address(addr):
+                log.warning(
+                    "coinbaser: invalid payout %r → ops (%s sats)",
+                    addr,
+                    sats,
+                )
+                addr = ops
             script = script_for_address(addr, ops)
             blob.extend(struct.pack("<Q", sats))
             blob.append(len(script))
             blob.extend(script)
             assigned += sats
+            n_value_outs += 1
             detail.append(f"{addr[:12]}…:{sats}")
             if assigned >= value:
                 break
@@ -382,6 +452,9 @@ class DatumPrimeSession:
             blob.append(len(script))
             blob.extend(script)
             detail.append(f"{ops[:12]}…:{value}")
+            n_value_outs = 1
+
+        self._remember_coinbaser(sent_id, n_value_outs)
 
         resp = bytearray()
         resp.append(0x11)
@@ -389,7 +462,14 @@ class DatumPrimeSession:
         resp.extend(struct.pack("<I", len(blob)))
         resp.extend(blob)
         await self.send_channel(bytes(resp), signed=False)
-        log.info("coinbaser value=%s outs=%d assigned=%s [%s]", value, len(outs), assigned, "; ".join(detail))
+        log.info(
+            "coinbaser value=%s outs=%d assigned=%s id=%s [%s]",
+            value,
+            n_value_outs,
+            assigned,
+            sent_id,
+            "; ".join(detail),
+        )
 
     def _parse_pow_job_meta(self, msg: bytes, after_user: int) -> tuple[int | None, int | None]:
         """Best-effort height / coinbase_value from optional 0x01 TLV after username."""
@@ -426,28 +506,75 @@ class DatumPrimeSession:
         difficulty: float,
         nonce: int,
     ) -> None:
-        """Previous-finder bonus: this finder gets 4% on *next* coinbasers; prior credit marked paid.
+        """Record a pending pool find; confirm/orphan later via chain_sync.
 
         Order matters: finder_credits.from_height / paid_in_height FK → blocks(height),
         so record the block row *before* marking prior credits paid or opening a new credit.
+        Hash resolve requires the tip coinbase to look like ours (TIDES tag / ops multi-out),
+        not merely getblockhash(height) — that race caused the wrong-block 657 bug.
         """
+        from tides_pool.block_confirm import coinbase_looks_like_ours, resolve_tides_block_near_height
+
         block_hash = f"pool-{height}-{finder[:8]}-{nonce:08x}"
+        resolved_height = int(height)
+        try:
+            rpc = BitcoinRPC(self.settings)
+            for _ in range(20):
+                found = resolve_tides_block_near_height(
+                    rpc,
+                    height=resolved_height,
+                    tag_primary=self.settings.coinbase_tag_primary,
+                    ops_address=self.settings.pool_ops_address,
+                    scan=1,
+                )
+                if found:
+                    resolved_height, block_hash = found
+                    break
+                # Also accept exact height if coinbase already ours
+                try:
+                    hx = rpc.call("getblockhash", [int(resolved_height)])
+                    if isinstance(hx, str) and len(hx) == 64:
+                        blk = rpc.call("getblock", [hx, 2])
+                        if coinbase_looks_like_ours(
+                            blk,
+                            tag_primary=self.settings.coinbase_tag_primary,
+                            ops_address=self.settings.pool_ops_address,
+                        ):
+                            block_hash = hx
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+            else:
+                log.warning(
+                    "BLOCK FOUND height=%s no TIDES coinbase yet; keeping synthetic %s",
+                    height,
+                    block_hash,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("BLOCK FOUND hash resolve failed: %s", exc)
+
+        head_seq = await self.store.max_share_seq()
         await self.store.record_block(
-            height=height,
+            height=resolved_height,
             block_hash=block_hash,
             difficulty=difficulty,
             reward_sats=reward_sats,
             finder_address=finder,
+            status="pending",
+            share_head_seq=head_seq,
         )
-        await self.store.set_meta("last_height", str(height))
-        paid_n = await self.store.mark_finder_credits_paid(height)
+        await self.store.set_meta("last_height", str(resolved_height))
+        # Mark only the oldest unpaid bonus (the one currently in coinbasers)
+        paid_n = await self.store.mark_finder_credits_paid(resolved_height)
         bonus = reward_sats * finder_credit_bps(self.settings) // 10_000
-        await self.store.open_finder_credit(height, finder, bonus)
+        await self.store.open_finder_credit(resolved_height, finder, bonus)
         log.info(
-            "BLOCK FOUND finder=%s worker=%s height=%s reward=%s bonus_next=%s (marked_paid=%s)",
+            "BLOCK FOUND finder=%s worker=%s height=%s hash=%s reward=%s bonus_next=%s (marked_paid=%s, pending confirm)",
             finder,
             worker,
-            height,
+            resolved_height,
+            block_hash[:16] if block_hash else "",
             reward_sats,
             bonus,
             paid_n,
@@ -456,9 +583,12 @@ class DatumPrimeSession:
     async def _pow(self, msg: bytes) -> None:
         if len(msg) < 31:
             return
+        # 0x27 job_id coinbase_id flags target_byte ntime nonce version en_len en[12] username…
         job_id = msg[1]
+        coinbase_id = msg[2]
         flags = msg[3]
-        is_block = bool(flags & 0x01)
+        is_block = bool(flags & FLAG_IS_BLOCK)
+        subsidy_only = bool(flags & FLAG_SUBSIDY_ONLY) or coinbase_id == 0xFF
         target_byte = msg[4]
         nonce = struct.unpack_from("<I", msg, 9)[0]
         # username C-string at offset 30
@@ -467,6 +597,93 @@ class DatumPrimeSession:
         username = (rest[:nul] if nul >= 0 else rest).decode("utf-8", errors="replace")
         address = username.split(".", 1)[0]
         worker = username.split(".", 1)[1] if "." in username else None
+
+        def _reject(reason: int, why: str) -> None:
+            log.warning(
+                "share REJECT %s user=%r coinbase_id=%s flags=%02x nonce=%08x block=%s",
+                why,
+                username,
+                coinbase_id,
+                flags,
+                nonce,
+                is_block,
+            )
+
+        # DATUM/Ocean convention: stratum username must be a payout address.
+        if not is_valid_payout_address(address):
+            _reject(DATUM_REJECT_BAD_USERNAME, "bad payout address")
+            resp = bytearray()
+            resp.append(0x8F)
+            resp.append(DATUM_POW_REJECTED)
+            resp.extend(struct.pack("<H", DATUM_REJECT_BAD_USERNAME))
+            resp.extend(struct.pack("<I", nonce))
+            resp.append(target_byte & 0xFF)
+            resp.append(job_id & 0xFF)
+            await self.send_channel(bytes(resp), signed=False)
+            return
+
+        # When we assigned a multi-out split, refuse empty/type-0/subsidy-only work for credit.
+        # Blake Gateways that mine coinbase[0] send coinbase_id=0 → zero shares until fixed.
+        if self._assigned_multi_out() and (subsidy_only or coinbase_id == 0):
+            _reject(DATUM_REJECT_BAD_COINBASE_OUTPUTS, "coinbase not multi-out")
+            resp = bytearray()
+            resp.append(0x8F)
+            resp.append(DATUM_POW_REJECTED)
+            resp.extend(struct.pack("<H", DATUM_REJECT_BAD_COINBASE_OUTPUTS))
+            resp.extend(struct.pack("<I", nonce))
+            resp.append(target_byte & 0xFF)
+            resp.append(job_id & 0xFF)
+            await self.send_channel(bytes(resp), signed=False)
+            # Explicitly no finder credit even if is_block
+            await self.store.record_share_attempt(
+                address,
+                accepted=False,
+                reason_code=DATUM_REJECT_BAD_COINBASE_OUTPUTS,
+                why="coinbase not multi-out",
+                worker=worker,
+                is_block=is_block,
+            )
+            await self._maybe_quarantine(address, is_block=is_block)
+            return
+
+
+        # Quarantine rehab: good multi-out shares can lift the freeze after 3 in a row.
+        # Bad coinbase already returned above (reject 27, no finder).
+        q = await self.store.get_quarantine(address)
+        if q:
+            await self.store.record_share_attempt(
+                address,
+                accepted=True,
+                reason_code=0,
+                why="rehab-good",
+                worker=worker,
+                is_block=is_block,
+            )
+            streak = await self.store.consecutive_good_attempts(address, limit=20)
+            need = 3
+            if streak < need:
+                _reject(
+                    DATUM_REJECT_OTHER,
+                    f"quarantine rehab {streak}/{need} (good split; no credit yet)",
+                )
+                resp = bytearray()
+                resp.append(0x8F)
+                resp.append(DATUM_POW_REJECTED)
+                resp.extend(struct.pack("<H", DATUM_REJECT_OTHER))
+                resp.extend(struct.pack("<I", nonce))
+                resp.append(target_byte & 0xFF)
+                resp.append(job_id & 0xFF)
+                await self.send_channel(bytes(resp), signed=False)
+                return
+            await self.store.clear_quarantine(address)
+            log.warning(
+                "QUARANTINE CLEARED address=%s after %s good multi-out shares",
+                address,
+                streak,
+            )
+            # fall through — credit this share
+
+
         after_user = 30 + (nul + 1 if nul >= 0 else len(rest)) + 4  # username + NUL + 4 reserved
         tlv_height, tlv_value = self._parse_pow_job_meta(msg, after_user)
 
@@ -476,23 +693,34 @@ class DatumPrimeSession:
             work = 1 << int(target_byte)
 
         try:
-            # GPU-friendly per-address work cap (rolling window). Valid PoW still ACKed;
-            # only TIDES credit is limited so ASICs cannot dominate the share log.
+            # Optional per-address work cap. multiplier<=0 → normal pool (full credit).
             cap = self.settings.address_work_cap()
             window = self.settings.address_work_cap_window_sec
-            used = await self.store.work_for_address_since(address, window)
-            remaining = max(cap - used, 0)
-            credit = min(work, remaining)
+            if cap > 0:
+                used = await self.store.work_for_address_since(address, window)
+                remaining = max(cap - used, 0)
+                credit = min(work, remaining)
+            else:
+                used = 0
+                credit = work
             if credit > 0:
                 if self.on_share:
                     await self.on_share(address, credit, worker)
                 else:
                     await self.store.append_share(address, credit, worker=worker, fee_bps=0)
-            status = 0x50  # accepted (even if credit==0 — proof ok, capped)
+            await self.store.record_share_attempt(
+                address,
+                accepted=True,
+                reason_code=0,
+                why="ok",
+                worker=worker,
+                is_block=is_block,
+            )
+            status = DATUM_POW_ACCEPTED
             reason = 0
-            if credit < work:
+            if cap > 0 and credit < work:
                 log.info(
-                    "share OK (CAPPED) user=%s work=%s credited=%s used=%s/%s/%ss nonce=%08x",
+                    "share OK (CAPPED) user=%s work=%s credited=%s used=%s/%s/%ss nonce=%08x cb_id=%s",
                     username,
                     work,
                     credit,
@@ -500,13 +728,15 @@ class DatumPrimeSession:
                     cap,
                     window,
                     nonce,
+                    coinbase_id,
                 )
             else:
                 log.info(
-                    "share OK user=%s work=%s nonce=%08x%s",
+                    "share OK user=%s work=%s nonce=%08x cb_id=%s%s",
                     username,
                     work,
                     nonce,
+                    coinbase_id,
                     " BLOCK" if is_block else "",
                 )
 
@@ -540,8 +770,8 @@ class DatumPrimeSession:
                     nonce=nonce,
                 )
         except Exception as exc:  # noqa: BLE001
-            status = 0x66
-            reason = 30
+            status = DATUM_POW_REJECTED
+            reason = DATUM_REJECT_OTHER
             log.warning("share reject: %s", exc)
 
         resp = bytearray()
@@ -555,6 +785,8 @@ class DatumPrimeSession:
 
     async def run(self) -> None:
         await self.handshake()
+        peer = self.writer.get_extra_info("peername")
+        log.info("DATUM Gateway connected from %s", peer)
         while True:
             hdr_x = await self._read_exact(4)
             hdr_p = xor_header(hdr_x, self.recv_hdr_key)
@@ -593,10 +825,12 @@ async def handle_client(
     store: Store,
 ) -> None:
     peer = writer.get_extra_info("peername")
-    log.info("DATUM Gateway connected from %s", peer)
     sess = DatumPrimeSession(reader, writer, pool_keys, settings, store)
     try:
         await sess.run()
+    except HandshakeError as exc:
+        # Internet probes / wrong protocol — no traceback spam
+        log.debug("ignored non-DATUM probe from %s (%s)", peer, exc)
     except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError):
         log.info("DATUM Gateway disconnected %s", peer)
     except Exception:

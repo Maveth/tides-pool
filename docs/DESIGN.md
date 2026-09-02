@@ -21,16 +21,16 @@ See also the approved session plan. This file is the in-repo summary.
 
 ```text
 R = block reward
-TIDES miners : 0.95 R   (in coinbase of N, suggested before find)
-Finder credit: 0.04 R   (80% of the 5% fee; owed to finder of N; paid in N+1… suggestions)
-Pool ops     : 0.01 R   (20% of the 5% fee; in coinbase of N)
+TIDES miners : 0.90 R   (in coinbase of N, suggested before find)
+Finder credit: 0.08 R   (owed to finder of N; paid in N+1… suggestions)
+Pool ops     : 0.02 R   (in coinbase of N)
 ```
 
 ## Live lab wiring (NAS)
 
 | Piece | Detail |
 |-------|--------|
-| RC2 Knots | `bip110-knots-testnet4` RPC `192.168.0.143:48332` — tides-pool syncs tip/diff every ~15s |
+| RC3 Knots | `bip110-knots-testnet4` RPC `192.168.0.143:48332` — tides-pool syncs tip/diff every ~15s |
 | Pool UI | `http://192.168.0.143:8088/` |
 | Solo DATUM (unchanged) | `:23335` / API `:7154` → `mqMY6…` (maveth_tn4) |
 | **DATUM2 (pool gateway)** | `:23336` / API `:7155` → **`mfh5aSGhAWyJ2cv8vU2S1jZ1bujwEizRV3`** |
@@ -56,3 +56,13 @@ Served at `/` from the same FastAPI process (`src/tides_pool/static/`).
 ## Non-goals (v1)
 
 Lightning, bare stratum templates, GPU-direct-to-pool, custodial balances, full Ocean portal polish / auth.
+
+## Payout username validation
+
+Prime validates the share username (before `.worker`) with `is_valid_payout_address()`:
+
+- **Accept** → credit TIDES work to that address.
+- **Reject** (`0x66` / reason `14` BAD_USERNAME) → no credit (covers junk like `box2`).
+- Coinbaser also folds any unencodable address into the ops output (defense-in-depth).
+
+Chain sync / UI tip labels: **RC3** (Catbus) on testnet4 Blake2b.
