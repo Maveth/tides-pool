@@ -56,16 +56,23 @@ class BitcoinRPC:
         return int(self.call("getblockcount"))
 
     def estimatesubsidy(self, height: int | None = None) -> int:
-        """Return subsidy in sats for height (TN4/main schedule approx)."""
-        # Prefer node if available; fall back to halving math
+        """Return subsidy in sats for height (halving schedule)."""
         try:
-            # Knots may not expose getblocksubsidy; use getblocktemplate coinbasevalue when possible
             if height is None:
                 height = self.getblockcount() + 1
         except BitcoinRPCError:
             height = height or 0
-        # Bitcoin subsidy schedule (also used on TN4 in practice for this lab)
         halvings = height // 210_000
         if halvings >= 64:
             return 0
         return (50 * 100_000_000) >> halvings
+
+    def estimate_next_reward(self) -> int:
+        """Best-effort next-block reward: GBT coinbasevalue (subsidy+fees) else subsidy."""
+        try:
+            tmpl = self.call("getblocktemplate", [{"rules": ["segwit"]}])
+            if isinstance(tmpl, dict) and tmpl.get("coinbasevalue"):
+                return int(tmpl["coinbasevalue"])
+        except BitcoinRPCError:
+            pass
+        return self.estimatesubsidy()

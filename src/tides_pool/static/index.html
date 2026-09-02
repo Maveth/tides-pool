@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TIDES · Mainnet Blake2b RC4</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260901i" />
+  <title>RIPTIDE · Mainnet Blake2b RC4</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260902t" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <a href="/">TIDES</a>
+      <a href="/">RIPTIDE</a>
       <span class="tag">mainnet · Blake2b · BIP110 RC4 · DATUM-only</span>
     </div>
     <form id="lookup" class="lookup" action="/address" method="get">
@@ -20,7 +20,7 @@
 
   <main>
     <section id="poolView">
-      <h1>Pool</h1>
+      <h1>RIPTIDE dashboard</h1>
       <p class="muted">Blake2b · BIP110 RC4 · DATUM-only. Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
 
       <details class="connect-panel connect-panel-top" id="connectPanel">
@@ -81,41 +81,78 @@
 
       <div class="cards" id="poolCards">Loading…</div>
 
-      <div class="box" id="coinbaserBox">
+      <div class="box dashboard-panel" id="poolChartBox">
+        <div class="chart-head">
+          <h2>Hashrate &amp; finds</h2>
+          <div class="chart-ranges" id="poolChartRanges" role="group" aria-label="Chart range">
+            <button type="button" data-range="1h">1h</button>
+            <button type="button" data-range="24h" class="active">24h</button>
+            <button type="button" data-range="7d">1w</button>
+          </div>
+        </div>
+        <p class="muted chart-sub">Pool vs network · click a find → mempool</p>
+        <div class="chart-wrap"><canvas id="poolChart" aria-label="Pool and network hashrate chart"></canvas></div>
+      </div>
+
+      <div class="box dashboard-panel" id="coinbaserBox">
         <h2>If we find a block now</h2>
-        <p class="muted">Current split from TIDES (Prime). Your Gateway must mine these outs (95% miners by work; 5% fee — 80% of fee / ~4% ≈ <strong class="kind-finder-inline">0.125 BTC</strong> finder bonus on the highlighted <strong class="kind-finder-inline">tides+finder</strong> line, ops keep ~1%).</p>
+        <p class="muted">Live coinbaser from Prime — your Gateway must mine these outs. Fee / finder / window details are in the footnote below.</p>
         <p class="muted" id="coinbaserNote"></p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Kind</th><th>Worker</th><th>Address</th><th>Amount</th></tr>
+              <tr><th>Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
             </thead>
             <tbody id="coinbaserBody"><tr><td colspan="4">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
 
-      <div class="grid-2">
+      <div class="stack-panels">
         <div>
           <h2>Contributors</h2>
           <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work.</p>
+          <p class="muted activity-legend">
+            <span class="activity-dot live" title="Shares in the last ~10 minutes"></span> hashing now
+            <span class="activity-dot idle" title="Work on this block, but quiet lately"></span> this block, idle
+            <span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span> no work this block
+          </p>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>#</th><th>Address</th><th>Shares</th><th>Work</th><th>~H/s</th><th>Payout %</th></tr>
+                <tr>
+                  <th></th>
+                  <th>#</th>
+                  <th>Address</th>
+                  <th title="Last coinbase secondary tag seen when this address found a block">Nickname</th>
+                  <th>Shares</th>
+                  <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
+                  <th title="Total work in the payout window (7 confirmed finds + current)">Total work</th>
+                  <th>~H/s</th>
+                  <th>Payout %</th>
+                </tr>
               </thead>
-              <tbody id="contribBody"><tr><td colspan="6">Loading…</td></tr></tbody>
+              <tbody id="contribBody"><tr><td colspan="9">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
-        <div>
+        <div class="recent-blocks-panel">
           <h2>Recent pool blocks <span class="muted" style="font-weight:400;font-size:0.9rem">(last 8 · orphans shown in red)</span></h2>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Height</th><th>Status</th><th>Finder</th><th>Reward</th><th>Diff</th></tr>
+                <tr>
+                  <th>Height</th>
+                  <th>Status</th>
+                  <th title="Stratum worker that submitted the block share">Worker</th>
+                  <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
+                  <th>Address</th>
+                  <th>Reward</th>
+                  <th>Diff</th>
+                  <th title="Elapsed time since the pool accounted this find">Ago</th>
+                </tr>
               </thead>
-              <tbody id="blocksBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+              <tbody id="blocksBody"><tr><td colspan="8">Loading…</td></tr></tbody>
             </table>
           </div>
           <p class="more-link"><a href="/blocks">More blocks →</a></p>
@@ -126,32 +163,86 @@
     </section>
 
     <section id="blocksView" class="hidden">
-      <p><a href="/">&larr; Pool</a></p>
+      <p><a href="/">&larr; RIPTIDE dashboard</a></p>
       <h1>Pool blocks</h1>
       <p class="muted">Newest first · up to 100 recent finds (confirmed, pending, orphaned).</p>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Height</th><th>Status</th><th>Finder</th><th>Reward</th><th>Diff</th></tr>
+            <tr>
+              <th>Height</th>
+              <th>Status</th>
+              <th title="Stratum worker that submitted the block share">Worker</th>
+              <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
+              <th>Address</th>
+              <th>Reward</th>
+              <th>Diff</th>
+              <th title="Elapsed time since the pool accounted this find">Ago</th>
+            </tr>
           </thead>
-          <tbody id="blocksAllBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+          <tbody id="blocksAllBody"><tr><td colspan="8">Loading…</td></tr></tbody>
         </table>
       </div>
     </section>
 
     <section id="userView" class="hidden">
-      <p><a href="/">&larr; Pool</a></p>
+      <p><a href="/">&larr; RIPTIDE dashboard</a></p>
+      <p class="muted" id="userSubtitle">Miner dashboard</p>
       <h1 id="userTitle">Address</h1>
       <div class="cards" id="userCards">Loading…</div>
-      <h2>Recent shares</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Seq</th><th>Worker</th><th>Work</th><th>When (UTC)</th></tr>
-          </thead>
-          <tbody id="sharesBody"><tr><td colspan="4">Loading…</td></tr></tbody>
-        </table>
+
+      <div class="box dashboard-panel" id="userChartBox">
+        <div class="chart-head">
+          <h2>Your hashrate</h2>
+          <div class="chart-ranges" id="userChartRanges" role="group" aria-label="Chart range">
+            <button type="button" data-range="1h">1h</button>
+            <button type="button" data-range="24h" class="active">24h</button>
+            <button type="button" data-range="7d">1w</button>
+          </div>
+        </div>
+        <p class="muted chart-sub">From your accepted shares · axis in TH/s · markers = your finds</p>
+        <div class="chart-wrap"><canvas id="userChart" aria-label="Miner hashrate chart"></canvas></div>
       </div>
+
+      <details class="miner-panel" id="payoutHistoryPanel">
+        <summary>
+          <span class="connect-title">Payout history</span>
+          <span class="muted connect-hint" id="payoutHistoryHint">TIDES share + finder bonuses · click to expand</span>
+        </summary>
+        <div class="miner-panel-body">
+          <p class="muted chart-sub">Reconstructed from pool finds (same math as Total earned). Newest first.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Height</th><th>Kind</th><th>Amount</th><th>Status</th><th title="Visitor local timezone">When</th></tr>
+              </thead>
+              <tbody id="payoutHistoryBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+
+      <details class="miner-panel" id="sharesPanel">
+        <summary>
+          <span class="connect-title">Recent shares</span>
+          <span class="muted connect-hint" id="sharesHint">paginated · chart covers the trend</span>
+        </summary>
+        <div class="miner-panel-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Seq</th><th>Worker</th><th>Work</th><th title="Visitor local timezone">When</th></tr>
+              </thead>
+              <tbody id="sharesBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="pager" id="sharesPager" hidden>
+            <button type="button" id="sharesPrev" disabled>Newer</button>
+            <span class="muted" id="sharesPageLabel">—</span>
+            <button type="button" id="sharesNext" disabled>Older</button>
+          </div>
+        </div>
+      </details>
     </section>
   </main>
 
@@ -160,6 +251,7 @@
     · <a href="/docs">API</a>
     · <a href="/health">health</a>
   </footer>
-  <script src="/static/app.js?v=20260901i"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="/static/app.js?v=20260902t" defer></script>
 </body>
 </html>

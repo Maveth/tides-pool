@@ -513,10 +513,15 @@ class DatumPrimeSession:
         Hash resolve requires the tip coinbase to look like ours (TIDES tag / ops multi-out),
         not merely getblockhash(height) — that race caused the wrong-block 657 bug.
         """
-        from tides_pool.block_confirm import coinbase_looks_like_ours, resolve_tides_block_near_height
+        from tides_pool.block_confirm import (
+            coinbase_looks_like_ours,
+            coinbase_value_sats,
+            resolve_tides_block_near_height,
+        )
 
         block_hash = f"pool-{height}-{finder[:8]}-{nonce:08x}"
         resolved_height = int(height)
+        resolved_blk: dict | None = None
         try:
             rpc = BitcoinRPC(self.settings)
             for _ in range(20):
@@ -529,6 +534,10 @@ class DatumPrimeSession:
                 )
                 if found:
                     resolved_height, block_hash = found
+                    try:
+                        resolved_blk = rpc.call("getblock", [block_hash, 2])
+                    except Exception:
+                        resolved_blk = None
                     break
                 # Also accept exact height if coinbase already ours
                 try:
@@ -541,6 +550,7 @@ class DatumPrimeSession:
                             ops_address=self.settings.pool_ops_address,
                         ):
                             block_hash = hx
+                            resolved_blk = blk
                             break
                 except Exception:
                     pass
@@ -553,6 +563,18 @@ class DatumPrimeSession:
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("BLOCK FOUND hash resolve failed: %s", exc)
+
+        # Prefer on-chain coinbase total (subsidy + fees) over TLV / subsidy-only estimate
+        if resolved_blk is not None:
+            actual = coinbase_value_sats(resolved_blk)
+            if actual and actual > 0:
+                if actual != int(reward_sats):
+                    log.info(
+                        "BLOCK FOUND reward from chain %s (was estimate %s)",
+                        actual,
+                        reward_sats,
+                    )
+                reward_sats = actual
 
         head_seq = await self.store.max_share_seq()
         await self.store.record_block(

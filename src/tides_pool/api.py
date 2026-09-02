@@ -12,9 +12,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from tides_pool import __version__
+from tides_pool.bitcoin_rpc import BitcoinRPC, BitcoinRPCError
 from tides_pool.chain_sync import chain_sync_loop, sync_once
 from tides_pool.config import Settings, finder_credit_bps, miner_reward_bps
 from tides_pool.datum_prime import start_datum_prime
+
+# Diff1 hashes (same convention as share / pool hashrate math). Never expose RPC.
+_DIFF1_HASHES = float(1 << 32)
 
 from tides_pool.models import (
     BlockOut,
@@ -24,6 +28,7 @@ from tides_pool.models import (
     HealthResponse,
     PoolStats,
     ShareOut,
+    UserPayoutOut,
     UserStats,
 )
 from tides_pool.store import (
@@ -112,6 +117,25 @@ async def _difficulty() -> int:
         return 1
 
 
+async def _difficulty_float() -> float:
+    raw = await store.get_meta("block_difficulty", "1") or "1"
+    try:
+        return max(float(raw), 1.0)
+    except ValueError:
+        return 1.0
+
+
+async def _network_hashrate_hs() -> float:
+    """Server-side only: Knots getnetworkhashps. Never proxied to clients."""
+    try:
+        rpc = BitcoinRPC(settings)
+        val = await asyncio.to_thread(rpc.call, "getnetworkhashps", [120])
+        return float(val or 0)
+    except (BitcoinRPCError, TypeError, ValueError) as exc:
+        log.warning("network hashrate unavailable: %s", exc)
+        return 0.0
+
+
 async def _reward_estimate() -> int:
     raw = await store.get_meta("reward_estimate", str(50 * 100_000_000)) or "0"
     try:
@@ -120,18 +144,23 @@ async def _reward_estimate() -> int:
         return 0
 
 
-async def _last_height() -> int | None:
-    # Latest non-orphaned pool find for the "Last pool block" card.
+async def _last_pool_find() -> tuple[int | None, datetime | None]:
+    """Latest non-orphaned pool find (height, accounted_at) for dashboard cards."""
     for b in await store.list_blocks(limit=30):
         if b.status in ("pending", "confirmed"):
-            return b.height
+            return b.height, b.accounted_at
     raw = await store.get_meta("last_height")
     if raw is None:
-        return None
+        return None, None
     try:
-        return int(raw)
+        return int(raw), None
     except ValueError:
-        return None
+        return None, None
+
+
+async def _last_height() -> int | None:
+    h, _ = await _last_pool_find()
+    return h
 
 
 async def _payout_window():
@@ -146,15 +175,15 @@ async def _payout_window():
     return shares, window, cutoff, len(confirmed)
 
 
-async def _blocks_last_24h() -> tuple[int, int]:
-    """Return (confirmed_or_pending, orphaned) finds accounted in the last 24 hours.
+async def _blocks_since(hours: float, *, limit: int = 500) -> tuple[int, int]:
+    """Return (confirmed_or_pending, orphaned) finds accounted in the last `hours`.
 
     Orphans are excluded from the main count but returned separately for the UI.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     good = 0
     orphans = 0
-    for b in await store.list_blocks(limit=100):
+    for b in await store.list_blocks(limit=limit):
         if str(b.block_hash).startswith("lab-"):
             continue
         ts = b.accounted_at
@@ -163,7 +192,8 @@ async def _blocks_last_24h() -> tuple[int, int]:
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         if ts < cutoff:
-            continue
+            # list_blocks is newest-first; older than window → stop
+            break
         st = getattr(b, "status", None) or "confirmed"
         if st in ("orphaned", "misattributed"):
             orphans += 1
@@ -172,11 +202,18 @@ async def _blocks_last_24h() -> tuple[int, int]:
     return good, orphans
 
 
-def _fmt_sats_html(sats: int) -> str:
+async def _blocks_last_24h() -> tuple[int, int]:
+    return await _blocks_since(24, limit=100)
+
+
+def _fmt_btc_html(sats: int) -> str:
+    """User-facing amounts are always BTC (trim trailing zeros)."""
     n = int(sats or 0)
-    if n >= 100_000_000:
-        return f"{n / 1e8:.4f} BTC"
-    return f"{n:,} sats"
+    btc = n / 1e8
+    text = f"{btc:.8f}".rstrip("0").rstrip(".")
+    if text == "-0":
+        text = "0"
+    return f"{text} BTC"
 
 
 def _short_addr_html(addr: str) -> str:
@@ -198,13 +235,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260901i"',
+        'src="/static/app.js?v=20260902t"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260901i"',
+        'href="/static/style.css?v=20260902t"',
         html,
         count=1,
     )
@@ -213,10 +250,10 @@ async def index() -> HTMLResponse:
         cb = await _coinbaser_payload()
         outs = cb.outputs or []
         note = (
-            f"~{_fmt_sats_html(cb.reward_sats_estimate)} total · {len(outs)} payout line(s) "
+            f"~{_fmt_btc_html(cb.reward_sats_estimate)} total · {len(outs)} payout line(s) "
             f"· window work {cb.window_work:,}"
             if outs
-            else f"No miner lines yet (~{_fmt_sats_html(cb.reward_sats_estimate)}) — empty window pays ops only"
+            else f"No miner lines yet (~{_fmt_btc_html(cb.reward_sats_estimate)}) — empty window pays ops only"
         )
         if outs:
             rows = []
@@ -228,16 +265,18 @@ async def index() -> HTMLResponse:
                     f"<td>{nm}</td>"
                     f'<td class="mono"><a href="/address?a={o.address}" title="{o.address}">'
                     f"{_short_addr_html(o.address)}</a></td>"
-                    f"<td>{_fmt_sats_html(o.sats)}</td>"
+                    f"<td title=\"{int(o.sats or 0):,} sats\">{_fmt_btc_html(o.sats)}</td>"
                     "</tr>"
                 )
             body = "\n".join(rows)
         else:
             body = '<tr><td colspan="4" class="muted">No coinbaser outputs (empty window → ops only)</td></tr>'
-        html = html.replace(
-            'id="coinbaserNote">Loading split…</p>',
+        # Match both empty note and legacy "Loading…" placeholders.
+        html = _re.sub(
+            r'id="coinbaserNote">[^<]*</p>',
             f'id="coinbaserNote">{note}</p>',
-            1,
+            html,
+            count=1,
         )
         html = html.replace(
             '<tbody id="coinbaserBody"><tr><td colspan="3">Loading…</td></tr></tbody>',
@@ -286,16 +325,36 @@ async def stats() -> PoolStats:
     recent_work = sum(r.work for r in recent)
     # Target work is informational only now (Ocean-sized); fill is find-window work.
     ocean_target = window_size(diff, settings.window_blocks)
-    blocks_24h, orphans_24h = await _blocks_last_24h()
+    blocks_24h, orphans_24h = await _blocks_since(24, limit=200)
+    blocks_7d, orphans_7d = await _blocks_since(24 * 7, limit=500)
+    last_h, last_at = await _last_pool_find()
+    age_sec: int | None = None
+    if last_at is not None:
+        ts = last_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_sec = max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
+    pool_hs = estimate_hashrate_hs(recent_work, hr_window)
+    diff_f = await _difficulty_float()
+    # Derived public metrics only — no raw RPC payloads / no RPC proxy.
+    net_hs = await _network_hashrate_hs()
+    share_pct = (100.0 * pool_hs / net_hs) if net_hs > 0 and pool_hs > 0 else 0.0
+    est_block: float | None = None
+    if pool_hs > 0 and diff_f > 0:
+        est_block = (diff_f * _DIFF1_HASHES) / pool_hs
     return PoolStats(
         share_log_work=await store.total_work(),
         share_count=await store.share_count(),
         window_work_target=ocean_target,
         window_work_filled=filled,
         addresses_in_window=len(addrs),
-        last_pool_block_height=await _last_height(),
+        last_pool_block_height=last_h,
+        last_pool_block_at=last_at,
+        last_pool_block_age_sec=age_sec,
         blocks_last_24h=blocks_24h,
         orphans_last_24h=orphans_24h,
+        blocks_last_7d=blocks_7d,
+        orphans_last_7d=orphans_7d,
         chain_height=chain_h,
         block_difficulty=diff,
         reward_estimate_sats=await _reward_estimate(),
@@ -315,10 +374,13 @@ async def stats() -> PoolStats:
         address_work_cap=settings.address_work_cap(),
         address_work_cap_window_sec=settings.address_work_cap_window_sec,
         gpu_baseline_hs=settings.gpu_baseline_hashrate_hs,
-        hashrate_hs=estimate_hashrate_hs(recent_work, hr_window),
+        hashrate_hs=pool_hs,
         hashrate_window_sec=hr_window,
         hashrate_work=recent_work,
         hashrate_shares=len(recent),
+        network_hashrate_hs=net_hs,
+        pool_network_share_pct=round(share_pct, 6),
+        est_block_time_sec=est_block,
     )
 
 
@@ -327,8 +389,20 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
     _shares, window, _cutoff, _n = await _payout_window()
     hr_window = 600
     recent = await store.list_share_rows_since(hr_window, limit=50_000)
-    rows = contributor_rows(window, recent=recent, hashrate_window_sec=hr_window)[:limit]
-    qmap = await store.list_quarantines([r["address"] for r in rows])
+    # "This block" = shares after the latest confirmed find's share_head_seq.
+    confirmed_one = await store.list_confirmed_blocks(limit=1)
+    current_since = None
+    if confirmed_one and confirmed_one[0].share_head_seq is not None:
+        current_since = int(confirmed_one[0].share_head_seq)
+    rows = contributor_rows(
+        window,
+        recent=recent,
+        hashrate_window_sec=hr_window,
+        current_since_seq=current_since,
+    )[:limit]
+    addrs = [r["address"] for r in rows]
+    qmap = await store.list_quarantines(addrs)
+    nmap = await store.nicknames_for_addresses(addrs)
     out: list[Contributor] = []
     for r in rows:
         q = qmap.get(r["address"])
@@ -337,16 +411,245 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
                 **r,
                 quarantined=bool(q),
                 quarantine_reason=(q or {}).get("reason") if q else None,
+                nickname=nmap.get(r["address"]),
             )
         )
     return out
 
 
+# --- Charts (Ocean-lite hashrate + finds) ---------------------------------
+
+_CHART_RANGES: dict[str, tuple[int, int]] = {
+    # range_key -> (range_sec, bucket_sec)
+    "1h": (3600, 60),
+    "24h": (86400, 600),
+    "7d": (7 * 86400, 3600),
+    "1w": (7 * 86400, 3600),
+}
+
+
+def _chart_window(range_key: str) -> tuple[str, int, int, datetime, datetime]:
+    key = (range_key or "24h").strip().lower()
+    if key not in _CHART_RANGES:
+        raise HTTPException(status_code=400, detail="range must be 1h, 24h, or 7d")
+    range_sec, bucket_sec = _CHART_RANGES[key]
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(seconds=range_sec)
+    return key, range_sec, bucket_sec, start, end
+
+
+def _fill_hs_series(
+    buckets: list[tuple[datetime, int]],
+    *,
+    start: datetime,
+    end: datetime,
+    bucket_sec: int,
+) -> list[dict]:
+    """Dense series (zeros for empty buckets) so the chart x-axis is even."""
+    bsec = max(int(bucket_sec), 1)
+    by_ts = {
+        int(ts.timestamp()) // bsec * bsec: int(work)
+        for ts, work in buckets
+    }
+    start_i = int(start.timestamp()) // bsec * bsec
+    end_i = int(end.timestamp()) // bsec * bsec
+    out: list[dict] = []
+    t = start_i
+    while t < end_i:
+        work = by_ts.get(t, 0)
+        out.append(
+            {
+                "t": t,
+                "hs": estimate_hashrate_hs(work, bsec),
+            }
+        )
+        t += bsec
+    return out
+
+
+async def _network_hs_series(
+    *,
+    start: datetime,
+    end: datetime,
+    bucket_sec: int,
+) -> tuple[list[dict], str]:
+    """Network H/s series for charts.
+
+    Prefer persisted ``network_hashrate_samples`` (sampled ~60s from Knots
+    getnetworkhashps). Until that history exists, fall back to a flat tip line.
+    """
+    tip_hs = await _network_hashrate_hs()
+    bsec = max(int(bucket_sec), 1)
+    start_i = int(start.timestamp()) // bsec * bsec
+    # Include the in-progress bucket so a just-taken sample is visible.
+    end_i = int(end.timestamp()) // bsec * bsec
+
+    samples = await store.list_network_hashrate(start=start, end=end)
+    if samples:
+        # Last sample in each bucket (forward-fill empty buckets with prior hs).
+        by_bucket: dict[int, float] = {}
+        for ts, hs in samples:
+            b = int(ts.timestamp()) // bsec * bsec
+            by_bucket[b] = float(hs)
+        out: list[dict] = []
+        last_hs = float(samples[0][1])
+        first_b = int(samples[0][0].timestamp()) // bsec * bsec
+        t = start_i
+        while t <= end_i:
+            if t in by_bucket:
+                last_hs = by_bucket[t]
+            # Before first sample: leave 0 so the line starts when tracking began.
+            hs = last_hs if t >= first_b else 0.0
+            out.append({"t": t, "hs": hs})
+            t += bsec
+        return out, "samples"
+
+    # No history yet — flat tip so the axis still has a reference.
+    out = []
+    t = start_i
+    while t <= end_i:
+        out.append({"t": t, "hs": float(tip_hs or 0.0)})
+        t += bsec
+    return out, "tip"
+
+
+@app.get("/api/charts/pool")
+async def charts_pool(range: str = Query("24h")) -> dict:
+    key, _range_sec, bucket_sec, start, end = _chart_window(range)
+    buckets = await store.share_work_buckets(
+        start=start, end=end, bucket_sec=bucket_sec, address=None
+    )
+    pool = _fill_hs_series(buckets, start=start, end=end, bucket_sec=bucket_sec)
+    network, network_source = await _network_hs_series(
+        start=start, end=end, bucket_sec=bucket_sec
+    )
+    brows = await store.list_blocks_between(start=start, end=end, limit=500)
+    workers = await store.finder_workers_for_blocks(brows)
+    nmap = await store.nicknames_for_addresses(
+        [b.finder_address for b in brows if b.finder_address]
+    )
+    # Payout window: shares after Nth-last confirmed find → (N-1) confirmed + current.
+    n_win = max(int(settings.window_blocks or 8), 1)
+    confirmed = await store.list_confirmed_blocks(limit=n_win)
+    window_meta: dict | None = None
+    in_window_heights: set[int] = set()
+    if len(confirmed) >= n_win:
+        cutoff_block = confirmed[n_win - 1]  # Nth-last confirmed
+        newer = confirmed[: n_win - 1]  # up to 7 finds after cutoff
+        in_window_heights = {b.height for b in newer}
+        cts = cutoff_block.accounted_at
+        if cts is not None:
+            if cts.tzinfo is None:
+                cts = cts.replace(tzinfo=timezone.utc)
+            window_meta = {
+                "start_t": int(cts.timestamp()),
+                "end_t": int(end.timestamp()),
+                "cutoff_height": cutoff_block.height,
+                "finds_in_window": len(newer),
+                "window_blocks": n_win,
+                "label": f"{max(n_win - 1, 0)} confirmed + current",
+            }
+    elif confirmed:
+        # Fewer than N finds: whole history is the window
+        oldest = confirmed[-1]
+        ots = oldest.accounted_at
+        if ots is not None:
+            if ots.tzinfo is None:
+                ots = ots.replace(tzinfo=timezone.utc)
+            in_window_heights = {b.height for b in confirmed}
+            window_meta = {
+                "start_t": int(ots.timestamp()),
+                "end_t": int(end.timestamp()),
+                "cutoff_height": None,
+                "finds_in_window": len(confirmed),
+                "window_blocks": n_win,
+                "label": f"{len(confirmed)} finds (building to {n_win})",
+            }
+
+    blocks_out = []
+    for b in brows:
+        if str(b.block_hash).startswith(("lab-", "pool-")):
+            continue
+        ts = b.accounted_at
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        blocks_out.append(
+            {
+                "t": int(ts.timestamp()),
+                "height": b.height,
+                "block_hash": b.block_hash,
+                "worker": _display_worker(
+                    b.finder_address or "", workers.get(b.height)
+                ),
+                "nickname": nmap.get(b.finder_address or "") or None,
+                "status": b.status,
+                "in_window": b.height in in_window_heights,
+            }
+        )
+    return {
+        "range": key if key != "1w" else "7d",
+        "bucket_sec": bucket_sec,
+        "pool": pool,
+        "network": network,
+        "network_source": network_source,
+        "blocks": blocks_out,
+        "window": window_meta,
+    }
+
+
+@app.get("/api/user/{address}/charts")
+async def charts_user(address: str, range: str = Query("24h")) -> dict:
+    key, _range_sec, bucket_sec, start, end = _chart_window(range)
+    buckets = await store.share_work_buckets(
+        start=start, end=end, bucket_sec=bucket_sec, address=address
+    )
+    hashrate = _fill_hs_series(buckets, start=start, end=end, bucket_sec=bucket_sec)
+    brows = await store.list_blocks_between(start=start, end=end, limit=500)
+    mine = [b for b in brows if (b.finder_address or "") == address]
+    workers = await store.finder_workers_for_blocks(mine)
+    nmap = await store.nicknames_for_addresses([address] if address else [])
+    blocks_out = []
+    for b in mine:
+        if str(b.block_hash).startswith(("lab-", "pool-")):
+            continue
+        ts = b.accounted_at
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        blocks_out.append(
+            {
+                "t": int(ts.timestamp()),
+                "height": b.height,
+                "block_hash": b.block_hash,
+                "worker": _display_worker(address, workers.get(b.height)),
+                "nickname": nmap.get(address) or None,
+                "status": b.status,
+            }
+        )
+    return {
+        "range": key if key != "1w" else "7d",
+        "bucket_sec": bucket_sec,
+        "hashrate": hashrate,
+        "blocks": blocks_out,
+    }
+
+
 @app.get("/api/blocks", response_model=list[BlockOut])
 async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
-    rows = await store.list_blocks(limit=limit * 2)
-    # Hide synthetic lab rows from the public site
-    real = [b for b in rows if not str(b.block_hash).startswith("lab-")][:limit]
+    rows = await store.list_blocks(limit=limit * 3)
+    # Hide synthetic hashes (lab-/pool- placeholders) from the public site
+    real = [
+        b
+        for b in rows
+        if not str(b.block_hash).startswith(("lab-", "pool-"))
+    ][:limit]
+    workers = await store.finder_workers_for_blocks(real)
+    nmap = await store.nicknames_for_addresses(
+        [b.finder_address for b in real if b.finder_address]
+    )
     return [
         BlockOut(
             height=b.height,
@@ -354,6 +657,8 @@ async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
             difficulty=b.difficulty,
             reward_sats=b.reward_sats,
             finder_address=b.finder_address,
+            finder_worker=_display_worker(b.finder_address or "", workers.get(b.height)),
+            finder_nickname=nmap.get(b.finder_address or ""),
             accounted_at=b.accounted_at,
             status=b.status,
             orphan_reason=b.orphan_reason,
@@ -361,6 +666,74 @@ async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
         )
         for b in real
     ]
+
+
+async def _lifetime_tides_share_lines(address: str) -> list[UserPayoutOut]:
+    """Replay each confirmed find's coinbaser window; return this address's TIDES lines.
+
+    Window at find H = shares with cutoff_seq < seq <= share_head_seq(H), where
+    cutoff is the Nth-last confirmed find *before* H (same rule as live payouts).
+    """
+    confirmed = await store.list_confirmed_blocks(limit=500)
+    if not confirmed:
+        return []
+    # oldest → newest
+    blocks = list(reversed(confirmed))
+    shares = await store.list_shares_newest(limit=200_000)
+    n = max(int(settings.window_blocks or 8), 1)
+    miner_bps = miner_reward_bps(settings)
+    out: list[UserPayoutOut] = []
+    for i, b in enumerate(blocks):
+        if str(b.block_hash).startswith(("lab-", "pool-")):
+            continue
+        before = blocks[:i]
+        if len(before) >= n:
+            cut_blk = before[-n]
+            cutoff_seq = (
+                int(cut_blk.share_head_seq)
+                if cut_blk.share_head_seq is not None
+                else 0
+            )
+        else:
+            cutoff_seq = None
+        head = b.share_head_seq
+        window = []
+        for s in shares:
+            if head is not None and s.seq > int(head):
+                continue
+            if cutoff_seq is not None and s.seq <= int(cutoff_seq):
+                continue
+            window.append(s)
+        if not window:
+            continue
+        tides = split_reward(
+            window,
+            reward_sats=int(b.reward_sats or 0),
+            block_difficulty=int(b.difficulty or 1),
+            window_blocks=n,
+            miner_bps=miner_bps,
+            pool_ops_address=settings.pool_ops_address or "",
+            cutoff_seq=None,  # already filtered
+            window_mode="pool_finds",
+        )
+        for ln in tides.lines:
+            if ln.address == address:
+                out.append(
+                    UserPayoutOut(
+                        height=int(b.height),
+                        block_hash=b.block_hash,
+                        kind="tides",
+                        sats=int(ln.sats),
+                        status=b.status or "confirmed",
+                        accounted_at=b.accounted_at,
+                    )
+                )
+                break
+    return out
+
+
+async def _lifetime_tides_share_sats(address: str) -> int:
+    return sum(p.sats for p in await _lifetime_tides_share_lines(address))
 
 
 @app.get("/user/{address}", response_model=UserStats)
@@ -378,18 +751,50 @@ async def user_stats(address: str) -> UserStats:
     workers = sorted({r.worker for r in recent if r.worker})
     q = await store.get_quarantine(address)
     rej, attempts = await store.recent_attempt_stats(address, limit=20)
+    paid_finder, unpaid_finder = await store.finder_credit_totals(address)
+    # Unpaid = open finder bonuses only (est. next tides share is a separate card).
+    tides_earned = await _lifetime_tides_share_sats(address)
+    total_earned = int(tides_earned) + int(paid_finder)
+    unpaid_pending = int(unpaid_finder)
+    # Latest find by this address (as block finder), newest first.
+    last_find_height = None
+    last_find_at = None
+    last_find_age_sec = None
+    for b in await store.list_blocks(limit=500):
+        if (b.finder_address or "") != address:
+            continue
+        st = (b.status or "confirmed").lower()
+        if st in ("orphaned", "misattributed"):
+            continue
+        if str(b.block_hash).startswith(("lab-", "pool-")):
+            continue
+        last_find_height = int(b.height)
+        last_find_at = b.accounted_at
+        if last_find_at is not None:
+            ts = last_find_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            last_find_age_sec = max(
+                0, int((datetime.now(timezone.utc) - ts).total_seconds())
+            )
+        break
     return UserStats(
         address=address,
         work_in_window=work,
         share_pct=round(pct, 4),
         estimated_next_sats=est,
         pending_finder_credit_sats=pending,
+        total_earned_sats=total_earned,
+        unpaid_pending_sats=unpaid_pending,
         share_count_shown=len(recent),
         workers=workers,
         quarantined=bool(q),
         quarantine_reason=(q or {}).get("reason") if q else None,
         reject27_recent=rej,
         attempt_recent=attempts,
+        last_find_height=last_find_height,
+        last_find_at=last_find_at,
+        last_find_age_sec=last_find_age_sec,
     )
 
 
@@ -411,6 +816,51 @@ async def user_shares(
         )
         for r in rows
     ]
+
+
+@app.get("/api/user/{address}/payouts", response_model=list[UserPayoutOut])
+async def user_payouts(
+    address: str,
+    limit: int = Query(100, ge=1, le=500),
+) -> list[UserPayoutOut]:
+    """Reconstructed coinbase credits: TIDES share lines + finder bonuses."""
+    tides = await _lifetime_tides_share_lines(address)
+    # Map height → block meta for finder rows
+    confirmed = await store.list_confirmed_blocks(limit=500)
+    by_h = {int(b.height): b for b in confirmed}
+    # Also peek recent (incl. pending) for hash/time when finder from_height is pending
+    recent = await store.list_blocks(limit=200)
+    for b in recent:
+        by_h.setdefault(int(b.height), b)
+
+    finder_rows: list[UserPayoutOut] = []
+    for from_h, sats, paid_h in await store.list_finder_credits_for_address(
+        address, limit=limit
+    ):
+        blk = by_h.get(int(from_h))
+        status = "unpaid" if paid_h is None else "confirmed"
+        finder_rows.append(
+            UserPayoutOut(
+                height=int(from_h),
+                block_hash=blk.block_hash if blk else None,
+                kind="finder",
+                sats=int(sats),
+                status=status,
+                accounted_at=blk.accounted_at if blk else None,
+                paid_in_height=int(paid_h) if paid_h is not None else None,
+            )
+        )
+
+    merged = list(tides) + finder_rows
+    merged.sort(
+        key=lambda p: (
+            p.accounted_at.timestamp() if p.accounted_at else 0,
+            p.height,
+            0 if p.kind == "finder" else 1,
+        ),
+        reverse=True,
+    )
+    return merged[:limit]
 
 
 def _display_worker(address: str, worker: str | None) -> str:
@@ -458,19 +908,23 @@ async def _coinbaser_payload() -> CoinbaserResponse:
         finder_credit_sats=credit,
         min_output_sats=settings.min_output_sats,
     )
+    out_addrs = [str(o.get("address") or "") for o in raw if o.get("address")]
+    nmap = await store.nicknames_for_addresses(out_addrs)
     outputs: list[CoinbaseOutput] = []
     for o in raw:
         kind = o.get("kind") or "tides"
+        addr = str(o.get("address") or "")
         if kind == "ops":
             name = "ops"
         else:
-            name = await _worker_name_for_address(str(o.get("address") or ""))
+            name = await _worker_name_for_address(addr)
         outputs.append(
             CoinbaseOutput(
-                address=str(o.get("address") or ""),
+                address=addr,
                 sats=int(o.get("sats") or 0),
                 kind=kind,
                 name=name,
+                nickname=nmap.get(addr),
             )
         )
     head = shares[0].seq if shares else None

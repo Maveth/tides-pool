@@ -64,12 +64,44 @@ class Store(ABC):
     async def list_share_rows_since(self, since_seconds: int, *, limit: int = 50_000) -> list[ShareRow]: ...
 
     @abstractmethod
+    async def share_work_buckets(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        bucket_sec: int,
+        address: str | None = None,
+    ) -> list[tuple[datetime, int]]:
+        """Return [(bucket_start_utc, sum_work), ...] ascending for chart hashrate."""
+        ...
+
+    @abstractmethod
+    async def list_blocks_between(
+        self, *, start: datetime, end: datetime, limit: int = 500
+    ) -> list[BlockRow]:
+        """Pool finds with accounted_at in [start, end], oldest first."""
+        ...
+
+    @abstractmethod
+    async def record_network_hashrate(
+        self, hs: float, *, sampled_at: datetime | None = None, min_interval_sec: int = 50
+    ) -> bool:
+        """Append a network H/s sample (Knots getnetworkhashps). Returns False if throttled."""
+        ...
+
+    @abstractmethod
+    async def list_network_hashrate(
+        self, *, start: datetime, end: datetime, limit: int = 20_000
+    ) -> list[tuple[datetime, float]]:
+        """Return [(sampled_at, hs), ...] ascending for charts."""
+        ...
+
+    @abstractmethod
     async def share_count(self) -> int: ...
 
     @abstractmethod
     async def total_work(self) -> int: ...
 
-    @abstractmethod
     @abstractmethod
     async def record_block(
         self,
@@ -90,6 +122,21 @@ class Store(ABC):
     async def list_blocks_by_status(self, status: str, limit: int = 50) -> list[BlockRow]: ...
 
     @abstractmethod
+    async def finder_workers_for_blocks(self, blocks: list[BlockRow]) -> dict[int, str]:
+        """Map block height → stratum worker that submitted the winning share (best effort)."""
+        ...
+
+    @abstractmethod
+    async def set_address_nickname(self, address: str, nickname: str) -> None:
+        """Remember last-seen coinbase secondary tag (nickname) for an address."""
+        ...
+
+    @abstractmethod
+    async def nicknames_for_addresses(self, addresses: list[str]) -> dict[str, str]:
+        """address → last_nickname for known addresses."""
+        ...
+
+    @abstractmethod
     async def list_confirmed_blocks(self, limit: int = 20) -> list[BlockRow]: ...
 
     @abstractmethod
@@ -100,6 +147,9 @@ class Store(ABC):
 
     @abstractmethod
     async def set_block_status(self, height: int, status: str, *, orphan_reason: str | None = None) -> None: ...
+
+    @abstractmethod
+    async def update_block_reward(self, height: int, reward_sats: int) -> None: ...
 
     @abstractmethod
     async def mark_block_orphaned(self, height: int, *, reason: str) -> None: ...
@@ -131,8 +181,19 @@ class Store(ABC):
     async def pending_finder_credit_id(self) -> int | None: ...
 
     @abstractmethod
-    async def mark_finder_credits_paid(self, paid_in_height: int) -> int: ...
+    async def finder_credit_totals(self, address: str) -> tuple[int, int]:
+        """Return (paid_sats, unpaid_sats) for this address's finder bonuses."""
+        ...
 
+    @abstractmethod
+    async def list_finder_credits_for_address(
+        self, address: str, *, limit: int = 200
+    ) -> list[tuple[int, int, int | None]]:
+        """Return [(from_height, credit_sats, paid_in_height), ...] newest-first."""
+        ...
+
+    @abstractmethod
+    async def mark_finder_credits_paid(self, paid_in_height: int) -> int: ...
     @abstractmethod
     async def mark_finder_credit_paid(self, credit_id: int, paid_in_height: int) -> int: ...
 
@@ -240,6 +301,70 @@ class MemoryStore(Store):
                 break
         return out
 
+    async def share_work_buckets(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        bucket_sec: int,
+        address: str | None = None,
+    ) -> list[tuple[datetime, int]]:
+        import time
+        from collections import defaultdict
+
+        bsec = max(int(bucket_sec), 1)
+        start_ts = start.timestamp()
+        end_ts = end.timestamp()
+        acc: dict[int, int] = defaultdict(int)
+        for r in self._shares:
+            if address and r.address != address:
+                continue
+            ts = r.accepted_at.timestamp() if r.accepted_at.tzinfo else r.accepted_at.replace(tzinfo=timezone.utc).timestamp()
+            if ts < start_ts or ts >= end_ts:
+                continue
+            bucket = int(ts // bsec) * bsec
+            acc[bucket] += int(r.work)
+        return [
+            (datetime.fromtimestamp(k, tz=timezone.utc), acc[k])
+            for k in sorted(acc.keys())
+        ]
+
+    async def list_blocks_between(
+        self, *, start: datetime, end: datetime, limit: int = 500
+    ) -> list[BlockRow]:
+        rows = [
+            b
+            for b in self._blocks
+            if b.status in ("pending", "confirmed")
+            and b.accounted_at
+            and start <= b.accounted_at <= end
+        ]
+        rows.sort(key=lambda b: b.accounted_at or datetime.min.replace(tzinfo=timezone.utc))
+        return rows[:limit]
+
+    async def record_network_hashrate(
+        self, hs: float, *, sampled_at: datetime | None = None, min_interval_sec: int = 50
+    ) -> bool:
+        if not hasattr(self, "_net_hs"):
+            self._net_hs: list[tuple[datetime, float]] = []
+        ts = sampled_at or datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if self._net_hs:
+            last = self._net_hs[-1][0]
+            if (ts - last).total_seconds() < max(int(min_interval_sec), 0):
+                return False
+        self._net_hs.append((ts, float(hs)))
+        return True
+
+    async def list_network_hashrate(
+        self, *, start: datetime, end: datetime, limit: int = 20_000
+    ) -> list[tuple[datetime, float]]:
+        if not hasattr(self, "_net_hs"):
+            return []
+        out = [(t, h) for t, h in self._net_hs if start <= t <= end]
+        return out[:limit]
+
     async def share_count(self) -> int:
         return len(self._shares)
 
@@ -282,6 +407,48 @@ class MemoryStore(Store):
         rows = [b for b in self._blocks if b.status == status]
         return rows[:limit]
 
+    async def finder_workers_for_blocks(self, blocks: list[BlockRow]) -> dict[int, str]:
+        out: dict[int, str] = {}
+        for b in blocks:
+            if not b.finder_address:
+                continue
+            best = None
+            best_dt = None
+            for a in reversed(getattr(self, "_attempts", [])):
+                if not a.get("is_block"):
+                    continue
+                if a.get("address") != b.finder_address:
+                    continue
+                w = (a.get("worker") or "").strip()
+                if not w:
+                    continue
+                at = a.get("at")
+                if b.accounted_at and at:
+                    try:
+                        if abs((at - b.accounted_at).total_seconds()) > 600:
+                            continue
+                    except Exception:
+                        pass
+                if best_dt is None or (at and best_dt and at > best_dt) or best_dt is None:
+                    best, best_dt = w, at
+            if best:
+                out[int(b.height)] = best
+        return out
+
+    async def set_address_nickname(self, address: str, nickname: str) -> None:
+        from tides_pool.block_confirm import sanitize_nickname
+
+        nick = sanitize_nickname(nickname)
+        if not address or not nick:
+            return
+        if not hasattr(self, "_nicknames"):
+            self._nicknames = {}
+        self._nicknames[address] = nick
+
+    async def nicknames_for_addresses(self, addresses: list[str]) -> dict[str, str]:
+        nmap = getattr(self, "_nicknames", {})
+        return {a: nmap[a] for a in addresses if a in nmap}
+
     async def list_confirmed_blocks(self, limit: int = 20) -> list[BlockRow]:
         rows = [b for b in self._blocks if b.status == "confirmed"]
         return rows[:limit]
@@ -309,6 +476,22 @@ class MemoryStore(Store):
                     status=status,
                     share_head_seq=b.share_head_seq,
                     orphan_reason=orphan_reason if status in ("orphaned", "misattributed") else None,
+                )
+                break
+
+    async def update_block_reward(self, height: int, reward_sats: int) -> None:
+        for i, b in enumerate(self._blocks):
+            if b.height == height:
+                self._blocks[i] = BlockRow(
+                    height=b.height,
+                    block_hash=b.block_hash,
+                    difficulty=b.difficulty,
+                    reward_sats=int(reward_sats),
+                    finder_address=b.finder_address,
+                    accounted_at=b.accounted_at,
+                    status=b.status,
+                    share_head_seq=b.share_head_seq,
+                    orphan_reason=b.orphan_reason,
                 )
                 break
 
@@ -369,6 +552,28 @@ class MemoryStore(Store):
             if c[3] is None:
                 return i
         return None
+
+    async def finder_credit_totals(self, address: str) -> tuple[int, int]:
+        paid = unpaid = 0
+        for _h, addr, sats, paid_h in self._credits:
+            if addr != address:
+                continue
+            if paid_h is None:
+                unpaid += int(sats)
+            else:
+                paid += int(sats)
+        return paid, unpaid
+
+    async def list_finder_credits_for_address(
+        self, address: str, *, limit: int = 200
+    ) -> list[tuple[int, int, int | None]]:
+        rows = [
+            (int(h), int(sats), int(paid_h) if paid_h is not None else None)
+            for h, addr, sats, paid_h in self._credits
+            if addr == address
+        ]
+        rows.sort(key=lambda r: r[0], reverse=True)
+        return rows[:limit]
 
     async def mark_finder_credits_paid(self, paid_in_height: int) -> int:
         # Only oldest unpaid (matches single coinbaser bonus line)
@@ -506,6 +711,24 @@ class PostgresStore(Store):
             await conn.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS quarantine_reason TEXT"
             )
+            await conn.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_nickname TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname_seen_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS network_hashrate_samples (
+                    sampled_at TIMESTAMPTZ PRIMARY KEY,
+                    hs DOUBLE PRECISION NOT NULL
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS network_hashrate_samples_at_idx "
+                "ON network_hashrate_samples (sampled_at DESC)"
+            )
 
     async def close(self) -> None:
         if self._pool:
@@ -625,6 +848,126 @@ class PostgresStore(Store):
             for r in rows
         ]
 
+    async def share_work_buckets(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        bucket_sec: int,
+        address: str | None = None,
+    ) -> list[tuple[datetime, int]]:
+        bsec = max(int(bucket_sec), 1)
+        if address:
+            rows = await self._p().fetch(
+                """
+                SELECT to_timestamp(floor(extract(epoch FROM accepted_at) / $3) * $3)
+                         AT TIME ZONE 'UTC' AS bucket_ts,
+                       COALESCE(SUM(work), 0)::bigint AS work
+                FROM shares
+                WHERE accepted_at >= $1 AND accepted_at < $2
+                  AND address = $4
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                start,
+                end,
+                bsec,
+                address,
+            )
+        else:
+            rows = await self._p().fetch(
+                """
+                SELECT to_timestamp(floor(extract(epoch FROM accepted_at) / $3) * $3)
+                         AT TIME ZONE 'UTC' AS bucket_ts,
+                       COALESCE(SUM(work), 0)::bigint AS work
+                FROM shares
+                WHERE accepted_at >= $1 AND accepted_at < $2
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                start,
+                end,
+                bsec,
+            )
+        out: list[tuple[datetime, int]] = []
+        for r in rows:
+            ts = r["bucket_ts"]
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            out.append((ts, int(r["work"] or 0)))
+        return out
+
+    async def list_blocks_between(
+        self, *, start: datetime, end: datetime, limit: int = 500
+    ) -> list[BlockRow]:
+        rows = await self._p().fetch(
+            """
+            SELECT height, block_hash, difficulty, reward_sats, finder_address,
+                   accounted_at, status, share_head_seq, orphan_reason
+            FROM blocks
+            WHERE status IN ('pending', 'confirmed')
+              AND accounted_at >= $1 AND accounted_at <= $2
+            ORDER BY accounted_at ASC
+            LIMIT $3
+            """,
+            start,
+            end,
+            int(limit),
+        )
+        return [self._block_row(r) for r in rows]
+
+    async def record_network_hashrate(
+        self, hs: float, *, sampled_at: datetime | None = None, min_interval_sec: int = 50
+    ) -> bool:
+        ts = sampled_at or datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        last = await self._p().fetchval(
+            "SELECT sampled_at FROM network_hashrate_samples ORDER BY sampled_at DESC LIMIT 1"
+        )
+        if last is not None:
+            if getattr(last, "tzinfo", None) is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if (ts - last).total_seconds() < max(int(min_interval_sec), 0):
+                return False
+        await self._p().execute(
+            """
+            INSERT INTO network_hashrate_samples(sampled_at, hs)
+            VALUES ($1, $2)
+            ON CONFLICT (sampled_at) DO UPDATE SET hs = EXCLUDED.hs
+            """,
+            ts,
+            float(hs),
+        )
+        return True
+
+    async def list_network_hashrate(
+        self, *, start: datetime, end: datetime, limit: int = 20_000
+    ) -> list[tuple[datetime, float]]:
+        rows = await self._p().fetch(
+            """
+            SELECT sampled_at, hs
+            FROM network_hashrate_samples
+            WHERE sampled_at >= $1 AND sampled_at <= $2
+            ORDER BY sampled_at ASC
+            LIMIT $3
+            """,
+            start,
+            end,
+            int(limit),
+        )
+        out: list[tuple[datetime, float]] = []
+        for r in rows:
+            ts = r["sampled_at"]
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            out.append((ts, float(r["hs"] or 0.0)))
+        return out
+
     async def share_count(self) -> int:
         return int(await self._p().fetchval("SELECT COUNT(*) FROM shares") or 0)
 
@@ -728,6 +1071,100 @@ class PostgresStore(Store):
         )
         return [self._block_row(r) for r in rows]
 
+    async def finder_workers_for_blocks(self, blocks: list[BlockRow]) -> dict[int, str]:
+        """Best-effort: is_block share_attempt for finder near accounted_at; else last worker share."""
+        out: dict[int, str] = {}
+        if not blocks:
+            return out
+        for b in blocks:
+            if not b.finder_address:
+                continue
+            w = None
+            if b.accounted_at is not None:
+                row = await self._p().fetchrow(
+                    """
+                    SELECT worker FROM share_attempts
+                    WHERE is_block = true
+                      AND address = $1
+                      AND worker IS NOT NULL AND worker <> ''
+                      AND attempted_at BETWEEN ($2::timestamptz - interval '10 minutes')
+                                           AND ($2::timestamptz + interval '2 minutes')
+                    ORDER BY attempted_at DESC
+                    LIMIT 1
+                    """,
+                    b.finder_address,
+                    b.accounted_at,
+                )
+                if row and row["worker"]:
+                    w = str(row["worker"]).strip()
+            if not w and b.share_head_seq is not None:
+                row = await self._p().fetchrow(
+                    """
+                    SELECT worker FROM shares
+                    WHERE address = $1
+                      AND seq <= $2
+                      AND worker IS NOT NULL AND worker <> ''
+                    ORDER BY seq DESC
+                    LIMIT 1
+                    """,
+                    b.finder_address,
+                    int(b.share_head_seq),
+                )
+                if row and row["worker"]:
+                    w = str(row["worker"]).strip()
+            if not w:
+                row = await self._p().fetchrow(
+                    """
+                    SELECT worker FROM shares
+                    WHERE address = $1
+                      AND worker IS NOT NULL AND worker <> ''
+                    ORDER BY seq DESC
+                    LIMIT 1
+                    """,
+                    b.finder_address,
+                )
+                if row and row["worker"]:
+                    w = str(row["worker"]).strip()
+            if w:
+                out[int(b.height)] = w
+        return out
+
+    async def set_address_nickname(self, address: str, nickname: str) -> None:
+        # Lazy import avoids cycle (block_confirm imports Store).
+        from tides_pool.block_confirm import sanitize_nickname
+
+        nick = sanitize_nickname(nickname)
+        addr = (address or "").strip()
+        if not addr or not nick:
+            return
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users(address, last_nickname, nickname_seen_at)
+                VALUES($1, $2, now())
+                ON CONFLICT (address) DO UPDATE SET
+                  last_nickname = EXCLUDED.last_nickname,
+                  nickname_seen_at = now(),
+                  last_seen = now()
+                """,
+                addr,
+                nick,
+            )
+
+    async def nicknames_for_addresses(self, addresses: list[str]) -> dict[str, str]:
+        addrs = [a for a in addresses if a]
+        if not addrs:
+            return {}
+        rows = await self._p().fetch(
+            """
+            SELECT address, last_nickname FROM users
+            WHERE address = ANY($1::text[])
+              AND last_nickname IS NOT NULL AND last_nickname <> ''
+            """,
+            addrs,
+        )
+        return {str(r["address"]): str(r["last_nickname"]) for r in rows}
+
     async def list_blocks_by_status(self, status: str, limit: int = 50) -> list[BlockRow]:
         rows = await self._p().fetch(
             """
@@ -782,6 +1219,13 @@ class PostgresStore(Store):
             height,
             status,
             orphan_reason,
+        )
+
+    async def update_block_reward(self, height: int, reward_sats: int) -> None:
+        await self._p().execute(
+            "UPDATE blocks SET reward_sats = $2 WHERE height = $1",
+            height,
+            int(reward_sats),
         )
 
     async def mark_block_orphaned(self, height: int, *, reason: str) -> None:
@@ -895,6 +1339,25 @@ class PostgresStore(Store):
                         new_hash,
                     )
 
+                # 4) Re-apply "this block pays previous finder bonus".
+                # Step 2 reopened credits marked paid on the synthetic/wrong height; without
+                # this, pending_finder_credit() keeps pointing at the old finder (e.g. Maveth
+                # still unpaid after GS4's real block) and live coinbaser pays the wrong person.
+                await conn.execute(
+                    """
+                    UPDATE finder_credits
+                    SET paid_in_height = $1
+                    WHERE id = (
+                      SELECT id FROM finder_credits
+                      WHERE paid_in_height IS NULL
+                        AND from_height < $1
+                      ORDER BY id ASC
+                      LIMIT 1
+                    )
+                    """,
+                    int(new_height),
+                )
+
     async def set_meta(self, key: str, value: str) -> None:
         await self._p().execute(
             """
@@ -941,6 +1404,44 @@ class PostgresStore(Store):
             """
         )
         return int(val) if val is not None else None
+
+    async def finder_credit_totals(self, address: str) -> tuple[int, int]:
+        row = await self._p().fetchrow(
+            """
+            SELECT
+              COALESCE(SUM(credit_sats) FILTER (WHERE paid_in_height IS NOT NULL), 0)::bigint AS paid,
+              COALESCE(SUM(credit_sats) FILTER (WHERE paid_in_height IS NULL), 0)::bigint AS unpaid
+            FROM finder_credits
+            WHERE address = $1
+            """,
+            address,
+        )
+        if not row:
+            return 0, 0
+        return int(row["paid"] or 0), int(row["unpaid"] or 0)
+
+    async def list_finder_credits_for_address(
+        self, address: str, *, limit: int = 200
+    ) -> list[tuple[int, int, int | None]]:
+        rows = await self._p().fetch(
+            """
+            SELECT from_height, credit_sats, paid_in_height
+            FROM finder_credits
+            WHERE address = $1
+            ORDER BY from_height DESC, id DESC
+            LIMIT $2
+            """,
+            address,
+            limit,
+        )
+        return [
+            (
+                int(r["from_height"]),
+                int(r["credit_sats"]),
+                int(r["paid_in_height"]) if r["paid_in_height"] is not None else None,
+            )
+            for r in rows
+        ]
 
     async def mark_finder_credits_paid(self, paid_in_height: int) -> int:
         # Only the oldest unpaid credit (single bonus line in coinbaser)
@@ -1144,12 +1645,25 @@ def contributor_rows(
     *,
     recent: list[ShareRow] | None = None,
     hashrate_window_sec: int = 600,
+    current_since_seq: int | None = None,
 ) -> list[dict[str, Any]]:
+    """Build contributor rows for the payout window.
+
+    work / shares = full window (prior confirmed finds in window + current).
+    work_current / shares_current = shares newer than current_since_seq
+    (typically the share_head_seq of the latest confirmed pool find = this block only).
+    current_since_seq=None → treat the whole window as current (no confirmed finds yet).
+    """
     work: dict[str, int] = {}
     shares: dict[str, int] = {}
+    work_cur: dict[str, int] = {}
+    shares_cur: dict[str, int] = {}
     for s in window:
         work[s.address] = work.get(s.address, 0) + s.work
         shares[s.address] = shares.get(s.address, 0) + 1
+        if current_since_seq is None or s.seq > current_since_seq:
+            work_cur[s.address] = work_cur.get(s.address, 0) + s.work
+            shares_cur[s.address] = shares_cur.get(s.address, 0) + 1
     total = sum(work.values()) or 1
 
     recent_work: dict[str, int] = {}
@@ -1165,9 +1679,17 @@ def contributor_rows(
             {
                 "address": addr,
                 "work": w,
+                "work_current": work_cur.get(addr, 0),
                 "share_pct": round(100.0 * w / total, 4),
                 "shares": shares.get(addr, 0),
+                "shares_current": shares_cur.get(addr, 0),
                 "hashrate_hs": hs,
+                # live = recent HR; idle = this-block work but quiet; offline = no this-block work
+                "activity": (
+                    "live"
+                    if hs > 0
+                    else ("idle" if work_cur.get(addr, 0) > 0 else "offline")
+                ),
             }
         )
     rows.sort(key=lambda r: (-r["work"], r["address"]))

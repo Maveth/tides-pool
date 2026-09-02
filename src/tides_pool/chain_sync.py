@@ -21,18 +21,30 @@ async def sync_once(store: Store, settings: Settings) -> dict:
         mining = rpc.getmininginfo()
         height = int(info["blocks"])
         difficulty = float(info.get("difficulty") or mining.get("difficulty") or 1)
-        # Estimate next block reward: subsidy only for now (fees unknown until found)
+        # Prefer GBT coinbasevalue (subsidy + fees in mempool); fall back to subsidy schedule
         try:
-            subsidy = rpc.estimatesubsidy(height + 1)
+            reward_est = rpc.estimate_next_reward()
         except BitcoinRPCError:
-            subsidy = 50 * 100_000_000
+            try:
+                reward_est = rpc.estimatesubsidy(height + 1)
+            except BitcoinRPCError:
+                reward_est = 50 * 100_000_000
+        # Same estimator the website cards use (getnetworkhashps over last 120 blocks).
+        net_hs = mining.get("networkhashps")
+        try:
+            net_hs = float(rpc.call("getnetworkhashps", [120]) or net_hs or 0)
+        except (BitcoinRPCError, TypeError, ValueError):
+            try:
+                net_hs = float(net_hs or 0)
+            except (TypeError, ValueError):
+                net_hs = 0.0
         return {
             "height": height,
             "difficulty": difficulty,
             "bestblockhash": info.get("bestblockhash"),
             "chain": info.get("chain"),
-            "reward_estimate_sats": subsidy,
-            "networkhashps": mining.get("networkhashps"),
+            "reward_estimate_sats": reward_est,
+            "networkhashps": net_hs,
         }
 
     data = await asyncio.to_thread(_pull)
@@ -44,11 +56,19 @@ async def sync_once(store: Store, settings: Settings) -> dict:
     await store.set_meta("chain", str(data.get("chain") or ""))
     if data.get("networkhashps") is not None:
         await store.set_meta("networkhashps", str(data["networkhashps"]))
+        # Persist time series for charts (throttled ~once/min).
+        try:
+            hs = float(data["networkhashps"] or 0)
+            if hs > 0:
+                await store.record_network_hashrate(hs, min_interval_sec=50)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("network hashrate sample failed: %s", exc)
     log.info(
-        "chain sync: height=%s diff=%s subsidy≈%s",
+        "chain sync: height=%s diff=%s reward≈%s net≈%.3g H/s",
         data["height"],
         int(data["difficulty"]),
         data["reward_estimate_sats"],
+        float(data.get("networkhashps") or 0),
     )
     try:
         recon = await reconcile_pool_blocks(store, settings)
