@@ -813,12 +813,14 @@ class DatumPrimeSession:
 
         Order matters: finder_credits.from_height / paid_in_height FK → blocks(height),
         so record the block row *before* marking prior credits paid or opening a new credit.
-        Hash resolve requires the tip coinbase to look like ours (TIDES tag / ops multi-out),
-        not merely getblockhash(height) — that race caused the wrong-block 657 bug.
+        Hash resolve requires the tip coinbase to look like ours (TIDES tag + ops,
+        multi-out *or* ops-only manual), not merely getblockhash(height).
         """
         from tides_pool.block_confirm import (
+            build_intended_payout_snapshot,
             coinbase_looks_like_ours,
             coinbase_value_sats,
+            pool_coinbase_payout_mode,
             resolve_tides_block_near_height,
         )
 
@@ -880,6 +882,28 @@ class DatumPrimeSession:
                 reward_sats = actual
 
         head_seq = await self.store.max_share_seq()
+        payout_mode = "onchain_split"
+        intended_json = None
+        manual_note = None
+        if resolved_blk is not None:
+            mode = pool_coinbase_payout_mode(
+                resolved_blk,
+                tag_primary=self.settings.coinbase_tag_primary,
+                ops_address=self.settings.pool_ops_address,
+            )
+            if mode:
+                payout_mode = mode
+            if mode == "ops_manual":
+                manual_note = "Coinbase was ops-only; ops will pay miners manually"
+                try:
+                    intended_json = await build_intended_payout_snapshot(
+                        self.store,
+                        self.settings,
+                        reward_sats=int(reward_sats),
+                        share_head_seq=head_seq,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("intended payout snapshot failed: %s", exc)
         await self.store.record_block(
             height=resolved_height,
             block_hash=block_hash,
@@ -888,6 +912,9 @@ class DatumPrimeSession:
             finder_address=finder,
             status="pending",
             share_head_seq=head_seq,
+            payout_mode=payout_mode,
+            intended_payout_json=intended_json,
+            manual_payout_note=manual_note,
         )
         await self.store.set_meta("last_height", str(resolved_height))
         # Mark only the oldest unpaid bonus (the one currently in coinbasers)
@@ -898,12 +925,13 @@ class DatumPrimeSession:
         self.coinbaser_cache.invalidate(f"block found height={resolved_height}")
         self.coinbaser_cache._kick_refresh()
         log.info(
-            "BLOCK FOUND finder=%s worker=%s height=%s hash=%s reward=%s bonus_next=%s (marked_paid=%s, pending confirm)",
+            "BLOCK FOUND finder=%s worker=%s height=%s hash=%s reward=%s mode=%s bonus_next=%s (marked_paid=%s, pending confirm)",
             finder,
             worker,
             resolved_height,
             block_hash[:16] if block_hash else "",
             reward_sats,
+            payout_mode,
             bonus,
             paid_n,
         )

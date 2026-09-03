@@ -130,6 +130,11 @@ class BlockOut(BaseModel):
     status: str = "confirmed"
     orphan_reason: str | None = None
     share_head_seq: int | None = None
+    # onchain_split | ops_manual (ops-only coinbase; ops pays miners off-chain)
+    payout_mode: str = "onchain_split"
+    manual_payout_done: bool = False
+    manual_payout_note: str | None = None
+    intended_payout: list | dict | None = None  # parsed snapshot for UI/ops
 
 
 class CoinbaseOutput(BaseModel):

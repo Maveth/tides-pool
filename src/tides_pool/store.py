@@ -33,6 +33,11 @@ class BlockRow:
     status: str = "confirmed"
     share_head_seq: int | None = None
     orphan_reason: str | None = None
+    # onchain_split (normal multi-out) | ops_manual (ops-only coinbase; ops pays miners)
+    payout_mode: str = "onchain_split"
+    manual_payout_done: bool = False
+    manual_payout_note: str | None = None
+    intended_payout_json: str | None = None
 
 
 class Store(ABC):
@@ -121,7 +126,24 @@ class Store(ABC):
         finder_address: str | None,
         status: str = "pending",
         share_head_seq: int | None = None,
+        payout_mode: str = "onchain_split",
+        intended_payout_json: str | None = None,
+        manual_payout_done: bool = False,
+        manual_payout_note: str | None = None,
     ) -> None: ...
+
+    @abstractmethod
+    async def set_block_payout_meta(
+        self,
+        height: int,
+        *,
+        payout_mode: str | None = None,
+        intended_payout_json: str | None = None,
+        manual_payout_done: bool | None = None,
+        manual_payout_note: str | None = None,
+    ) -> None:
+        """Update manual/ops payout fields on an existing block row."""
+        ...
 
     @abstractmethod
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]: ...
@@ -408,6 +430,10 @@ class MemoryStore(Store):
         finder_address: str | None,
         status: str = "pending",
         share_head_seq: int | None = None,
+        payout_mode: str = "onchain_split",
+        intended_payout_json: str | None = None,
+        manual_payout_done: bool = False,
+        manual_payout_note: str | None = None,
     ) -> None:
         self._blocks = [b for b in self._blocks if b.height != height]
         head = share_head_seq if share_head_seq is not None else self._seq
@@ -421,11 +447,56 @@ class MemoryStore(Store):
                 accounted_at=datetime.now(timezone.utc),
                 status=status,
                 share_head_seq=head,
+                payout_mode=payout_mode or "onchain_split",
+                manual_payout_done=bool(manual_payout_done),
+                manual_payout_note=manual_payout_note,
+                intended_payout_json=intended_payout_json,
             )
         )
         self._blocks.sort(key=lambda b: b.height, reverse=True)
         if status in ("pending", "confirmed"):
             await self.set_meta("last_height", str(height))
+
+    async def set_block_payout_meta(
+        self,
+        height: int,
+        *,
+        payout_mode: str | None = None,
+        intended_payout_json: str | None = None,
+        manual_payout_done: bool | None = None,
+        manual_payout_note: str | None = None,
+    ) -> None:
+        for i, b in enumerate(self._blocks):
+            if b.height != height:
+                continue
+            self._blocks[i] = BlockRow(
+                height=b.height,
+                block_hash=b.block_hash,
+                difficulty=b.difficulty,
+                reward_sats=b.reward_sats,
+                finder_address=b.finder_address,
+                accounted_at=b.accounted_at,
+                status=b.status,
+                share_head_seq=b.share_head_seq,
+                orphan_reason=b.orphan_reason,
+                payout_mode=payout_mode if payout_mode is not None else b.payout_mode,
+                manual_payout_done=(
+                    bool(manual_payout_done)
+                    if manual_payout_done is not None
+                    else b.manual_payout_done
+                ),
+                manual_payout_note=(
+                    manual_payout_note
+                    if manual_payout_note is not None
+                    else b.manual_payout_note
+                ),
+                intended_payout_json=(
+                    intended_payout_json
+                    if intended_payout_json is not None
+                    else b.intended_payout_json
+                ),
+            )
+            break
 
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]:
         return self._blocks[:limit]
@@ -503,6 +574,10 @@ class MemoryStore(Store):
                     status=status,
                     share_head_seq=b.share_head_seq,
                     orphan_reason=orphan_reason if status in ("orphaned", "misattributed") else None,
+                    payout_mode=b.payout_mode,
+                    manual_payout_done=b.manual_payout_done,
+                    manual_payout_note=b.manual_payout_note,
+                    intended_payout_json=b.intended_payout_json,
                 )
                 break
 
@@ -519,6 +594,10 @@ class MemoryStore(Store):
                     status=b.status,
                     share_head_seq=b.share_head_seq,
                     orphan_reason=b.orphan_reason,
+                    payout_mode=b.payout_mode,
+                    manual_payout_done=b.manual_payout_done,
+                    manual_payout_note=b.manual_payout_note,
+                    intended_payout_json=b.intended_payout_json,
                 )
                 break
 
@@ -781,6 +860,21 @@ class PostgresStore(Store):
                 "CREATE INDEX IF NOT EXISTS network_hashrate_samples_at_idx "
                 "ON network_hashrate_samples (sampled_at DESC)"
             )
+            # Ops-only finds (Prime timeout fallback): keep as pool finds with manual payout
+            await conn.execute(
+                "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS payout_mode TEXT "
+                "NOT NULL DEFAULT 'onchain_split'"
+            )
+            await conn.execute(
+                "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS manual_payout_done BOOLEAN "
+                "NOT NULL DEFAULT false"
+            )
+            await conn.execute(
+                "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS manual_payout_note TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS intended_payout_json TEXT"
+            )
 
     async def close(self) -> None:
         if self._pool:
@@ -981,7 +1075,10 @@ class PostgresStore(Store):
         rows = await self._p().fetch(
             """
             SELECT height, block_hash, difficulty, reward_sats, finder_address,
-                   accounted_at, status, share_head_seq, orphan_reason
+                   accounted_at, status, share_head_seq, orphan_reason,
+                   COALESCE(payout_mode, 'onchain_split') AS payout_mode,
+                   COALESCE(manual_payout_done, false) AS manual_payout_done,
+                   manual_payout_note, intended_payout_json
             FROM blocks
             WHERE status IN ('pending', 'confirmed')
               AND accounted_at >= $1 AND accounted_at <= $2
@@ -1055,6 +1152,14 @@ class PostgresStore(Store):
         status = str(r["status"]) if "status" in keys and r["status"] is not None else "confirmed"
         head = r["share_head_seq"] if "share_head_seq" in keys else None
         reason = r["orphan_reason"] if "orphan_reason" in keys else None
+        mode = (
+            str(r["payout_mode"])
+            if "payout_mode" in keys and r["payout_mode"]
+            else "onchain_split"
+        )
+        done = bool(r["manual_payout_done"]) if "manual_payout_done" in keys else False
+        note = r["manual_payout_note"] if "manual_payout_note" in keys else None
+        snap = r["intended_payout_json"] if "intended_payout_json" in keys else None
         return BlockRow(
             height=r["height"],
             block_hash=r["block_hash"],
@@ -1065,6 +1170,10 @@ class PostgresStore(Store):
             status=status,
             share_head_seq=int(head) if head is not None else None,
             orphan_reason=reason,
+            payout_mode=mode,
+            manual_payout_done=done,
+            manual_payout_note=note,
+            intended_payout_json=snap,
         )
 
     async def record_block(
@@ -1077,9 +1186,14 @@ class PostgresStore(Store):
         finder_address: str | None,
         status: str = "pending",
         share_head_seq: int | None = None,
+        payout_mode: str = "onchain_split",
+        intended_payout_json: str | None = None,
+        manual_payout_done: bool = False,
+        manual_payout_note: str | None = None,
     ) -> None:
         if share_head_seq is None:
             share_head_seq = await self.max_share_seq()
+        mode = (payout_mode or "onchain_split").strip() or "onchain_split"
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 # Do not clobber a finalized orphan/confirmed row with a blind upsert
@@ -1093,9 +1207,10 @@ class PostgresStore(Store):
                     """
                     INSERT INTO blocks(
                       height, block_hash, difficulty, reward_sats, finder_address,
-                      share_head_seq, status, status_checked_at, orphan_reason
+                      share_head_seq, status, status_checked_at, orphan_reason,
+                      payout_mode, manual_payout_done, manual_payout_note, intended_payout_json
                     )
-                    VALUES($1, $2, $3, $4, $5, $6, $7, NULL, NULL)
+                    VALUES($1, $2, $3, $4, $5, $6, $7, NULL, NULL, $8, $9, $10, $11)
                     ON CONFLICT (height) DO UPDATE SET
                       block_hash = CASE
                         WHEN blocks.status = 'pending' THEN EXCLUDED.block_hash
@@ -1117,7 +1232,20 @@ class PostgresStore(Store):
                         ELSE blocks.status END,
                       accounted_at = CASE
                         WHEN blocks.status = 'pending' THEN now()
-                        ELSE blocks.accounted_at END
+                        ELSE blocks.accounted_at END,
+                      payout_mode = CASE
+                        WHEN blocks.status = 'pending' THEN EXCLUDED.payout_mode
+                        ELSE blocks.payout_mode END,
+                      intended_payout_json = CASE
+                        WHEN blocks.status = 'pending'
+                         AND EXCLUDED.intended_payout_json IS NOT NULL
+                        THEN EXCLUDED.intended_payout_json
+                        ELSE blocks.intended_payout_json END,
+                      manual_payout_note = CASE
+                        WHEN blocks.status = 'pending'
+                         AND EXCLUDED.manual_payout_note IS NOT NULL
+                        THEN EXCLUDED.manual_payout_note
+                        ELSE blocks.manual_payout_note END
                     """,
                     height,
                     block_hash,
@@ -1126,6 +1254,10 @@ class PostgresStore(Store):
                     finder_address,
                     share_head_seq,
                     status,
+                    mode,
+                    bool(manual_payout_done),
+                    manual_payout_note,
+                    intended_payout_json,
                 )
                 if status in ("pending", "confirmed"):
                     await conn.execute(
@@ -1136,11 +1268,45 @@ class PostgresStore(Store):
                         str(height),
                     )
 
+    async def set_block_payout_meta(
+        self,
+        height: int,
+        *,
+        payout_mode: str | None = None,
+        intended_payout_json: str | None = None,
+        manual_payout_done: bool | None = None,
+        manual_payout_note: str | None = None,
+    ) -> None:
+        # Build dynamic SET — only touch provided fields
+        sets: list[str] = []
+        args: list[Any] = [int(height)]
+        if payout_mode is not None:
+            args.append(payout_mode)
+            sets.append(f"payout_mode = ${len(args)}")
+        if intended_payout_json is not None:
+            args.append(intended_payout_json)
+            sets.append(f"intended_payout_json = ${len(args)}")
+        if manual_payout_done is not None:
+            args.append(bool(manual_payout_done))
+            sets.append(f"manual_payout_done = ${len(args)}")
+        if manual_payout_note is not None:
+            args.append(manual_payout_note)
+            sets.append(f"manual_payout_note = ${len(args)}")
+        if not sets:
+            return
+        await self._p().execute(
+            f"UPDATE blocks SET {', '.join(sets)} WHERE height = $1",
+            *args,
+        )
+
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]:
         rows = await self._p().fetch(
             """
             SELECT height, block_hash, difficulty, reward_sats, finder_address, accounted_at,
-                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason
+                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason,
+                   COALESCE(payout_mode, 'onchain_split') AS payout_mode,
+                   COALESCE(manual_payout_done, false) AS manual_payout_done,
+                   manual_payout_note, intended_payout_json
             FROM blocks ORDER BY height DESC LIMIT $1
             """,
             limit,
@@ -1245,7 +1411,10 @@ class PostgresStore(Store):
         rows = await self._p().fetch(
             """
             SELECT height, block_hash, difficulty, reward_sats, finder_address, accounted_at,
-                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason
+                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason,
+                   COALESCE(payout_mode, 'onchain_split') AS payout_mode,
+                   COALESCE(manual_payout_done, false) AS manual_payout_done,
+                   manual_payout_note, intended_payout_json
             FROM blocks
             WHERE COALESCE(status, 'confirmed') = $1
             ORDER BY height ASC
@@ -1260,7 +1429,10 @@ class PostgresStore(Store):
         rows = await self._p().fetch(
             """
             SELECT height, block_hash, difficulty, reward_sats, finder_address, accounted_at,
-                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason
+                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason,
+                   COALESCE(payout_mode, 'onchain_split') AS payout_mode,
+                   COALESCE(manual_payout_done, false) AS manual_payout_done,
+                   manual_payout_note, intended_payout_json
             FROM blocks
             WHERE COALESCE(status, 'confirmed') = 'confirmed'
             ORDER BY height DESC

@@ -326,6 +326,24 @@ tr.row-pending:hover td {
   background: rgba(240, 180, 41, 0.16);
 }
 
+.badge-manual {
+  background: rgba(240, 160, 40, 0.22);
+  color: #ffc14d;
+  font-weight: 700;
+}
+.badge-manual-done {
+  background: rgba(80, 180, 120, 0.20);
+  color: #7ddea8;
+  font-weight: 600;
+}
+tr.row-manual td {
+  background: rgba(240, 160, 40, 0.10);
+  border-bottom-color: rgba(240, 160, 40, 0.30);
+}
+tr.row-manual:hover td {
+  background: rgba(240, 160, 40, 0.16);
+}
+
 /* Dashboard primary panels — keep padding consistent; avoid stacked h2 + box gaps */
 .box,
 .dashboard-panel {

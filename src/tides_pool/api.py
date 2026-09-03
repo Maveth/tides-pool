@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -235,13 +236,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260902t"',
+        'src="/static/app.js?v=20260903a"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260902t"',
+        'href="/static/style.css?v=20260903a"',
         html,
         count=1,
     )
@@ -650,22 +651,38 @@ async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
     nmap = await store.nicknames_for_addresses(
         [b.finder_address for b in real if b.finder_address]
     )
-    return [
-        BlockOut(
-            height=b.height,
-            block_hash=b.block_hash,
-            difficulty=b.difficulty,
-            reward_sats=b.reward_sats,
-            finder_address=b.finder_address,
-            finder_worker=_display_worker(b.finder_address or "", workers.get(b.height)),
-            finder_nickname=nmap.get(b.finder_address or ""),
-            accounted_at=b.accounted_at,
-            status=b.status,
-            orphan_reason=b.orphan_reason,
-            share_head_seq=b.share_head_seq,
+    out: list[BlockOut] = []
+    for b in real:
+        intended = None
+        raw = getattr(b, "intended_payout_json", None)
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                intended = parsed.get("outputs", parsed) if isinstance(parsed, dict) else parsed
+            except Exception:  # noqa: BLE001
+                intended = None
+        out.append(
+            BlockOut(
+                height=b.height,
+                block_hash=b.block_hash,
+                difficulty=b.difficulty,
+                reward_sats=b.reward_sats,
+                finder_address=b.finder_address,
+                finder_worker=_display_worker(
+                    b.finder_address or "", workers.get(b.height)
+                ),
+                finder_nickname=nmap.get(b.finder_address or ""),
+                accounted_at=b.accounted_at,
+                status=b.status,
+                orphan_reason=b.orphan_reason,
+                share_head_seq=b.share_head_seq,
+                payout_mode=getattr(b, "payout_mode", None) or "onchain_split",
+                manual_payout_done=bool(getattr(b, "manual_payout_done", False)),
+                manual_payout_note=getattr(b, "manual_payout_note", None),
+                intended_payout=intended,
+            )
         )
-        for b in real
-    ]
+    return out
 
 
 async def _lifetime_tides_share_lines(address: str) -> list[UserPayoutOut]:

@@ -225,6 +225,19 @@ function blockStatusBadge(b) {
     const why = b.orphan_reason ? ` — ${b.orphan_reason}` : "";
     return `<span class="badge badge-orphan" title="Not on tip / no payout${why}">orphaned</span>`;
   }
+  const mode = (b && b.payout_mode) || "onchain_split";
+  if (mode === "ops_manual") {
+    const done = !!(b && b.manual_payout_done);
+    const note =
+      (b && b.manual_payout_note) ||
+      "Coinbase was ops-only; ops will pay miners manually";
+    const nOut = Array.isArray(b && b.intended_payout) ? b.intended_payout.length : 0;
+    const extra = nOut ? ` · snapshot ${nOut} line(s)` : "";
+    if (done) {
+      return `<span class="badge badge-manual-done" title="${note}${extra}">manual paid</span>`;
+    }
+    return `<span class="badge badge-manual" title="${note}${extra}">manual payout</span>`;
+  }
   return `<span class="badge badge-ok">confirmed</span>`;
 }
 
@@ -309,8 +322,13 @@ function renderBlocksTable(blocks, bodyId, info) {
       const orphaned = st === "orphaned" || st === "misattributed";
       const pending = st === "pending";
       let rowClass = "";
+      const manualPending =
+        !orphaned &&
+        ((b && b.payout_mode) || "") === "ops_manual" &&
+        !(b && b.manual_payout_done);
       if (orphaned) rowClass = ' class="row-orphan"';
       else if (pending) rowClass = ' class="row-pending"';
+      else if (manualPending) rowClass = ' class="row-manual"';
       const reward = orphaned
         ? "-"
         : `<span title="${fmtBtcTitle(b.reward_sats)}">${fmtBtc(b.reward_sats)}</span>`;
