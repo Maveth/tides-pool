@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import struct
+import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -23,12 +25,15 @@ from tides_pool.addresses import address_to_script, is_valid_payout_address
 from tides_pool.config import Settings, finder_credit_bps, miner_reward_bps
 from tides_pool.bitcoin_rpc import BitcoinRPC
 from tides_pool.store import Store
-from tides_pool.tides import coinbase_suggestion, split_reward
+from tides_pool.tides import Share, coinbase_suggestion, split_reward
 
 
 log = logging.getLogger("tides_pool.datum_prime")
 
 AcceptShareCb = Callable[[str, int, str | None], Awaitable[None]]
+
+# Good attempt "why" values that count toward rehab / probation streaks.
+_GOOD_ATTEMPT_WHY = frozenset({"ok", "rehab-good", "probation-good"})
 
 # DATUM reject reason codes (protocol)
 DATUM_REJECT_BAD_COINBASE_ID = 11
@@ -55,6 +60,280 @@ def script_for_address(addr: str, fallback_ops: str) -> bytes:
         log.warning("cannot encode %s — using ops address script", addr)
         return address_to_script(fallback_ops)
 
+
+@dataclass
+class _CachedWindow:
+    cutoff_seq: int | None
+    shares: list[Share]  # newest-first, window only
+    block_diff: int
+    finder: str
+    finder_credit: int
+    computed_at: float
+    max_seq: int
+
+
+class CoinbaserSplitCache:
+    """Process-wide payout-window share cache + cheap coinbaser replies.
+
+    - Full DB reload every `coinbaser_cache_seconds` (default 15) or on invalidate
+      (new find / finder credit).
+    - Accepted shares append into an incremental buffer between reloads.
+    - `0x10` handlers rescale the cached window to the request `value` on a worker
+      thread — they do not re-scan 50k rows on the asyncio loop.
+    """
+
+    def __init__(self, store: Store, settings: Settings) -> None:
+        self.store = store
+        self.settings = settings
+        self._lock = asyncio.Lock()
+        self._cached: _CachedWindow | None = None
+        self._extras: list[Share] = []
+        self._dirty = True
+        self._refresh_task: asyncio.Task | None = None
+        self._bg_task: asyncio.Task | None = None
+        self._refresh_count = 0
+
+    def ttl(self) -> float:
+        return float(getattr(self.settings, "coinbaser_cache_seconds", 15.0) or 15.0)
+
+    def note_share(self, *, seq: int, address: str, work: int, fee_bps: int = 0) -> None:
+        if work < 1 or not address:
+            return
+        self._extras.append(
+            Share(seq=int(seq), address=address, work=int(work), fee_bps=int(fee_bps))
+        )
+        # Bound extras if a refresh is stuck; background reload will reset.
+        if len(self._extras) > 50_000:
+            self._extras = self._extras[-10_000:]
+            self._dirty = True
+
+    def invalidate(self, reason: str = "") -> None:
+        self._dirty = True
+        if reason:
+            log.info("coinbaser cache invalidate: %s", reason)
+
+    def is_fresh(self) -> bool:
+        c = self._cached
+        if c is None or self._dirty:
+            return False
+        return (time.monotonic() - c.computed_at) < self.ttl()
+
+    def _merged_shares(self, c: _CachedWindow) -> list[Share]:
+        if not self._extras:
+            return list(c.shares)
+        seen = {s.seq for s in c.shares}
+        extra_new = [s for s in self._extras if s.seq not in seen and s.seq > (c.max_seq or 0)]
+        if not extra_new:
+            return list(c.shares)
+        # extras were appended oldest→newest; window wants newest-first
+        return list(reversed(extra_new)) + list(c.shares)
+
+    async def refresh(self, *, force: bool = False) -> None:
+        if not force and self.is_fresh():
+            return
+        async with self._lock:
+            if not force and self.is_fresh():
+                return
+            t0 = time.monotonic()
+            cutoff = await self.store.payout_window_cutoff_seq(self.settings.window_blocks)
+            shares = await self.store.list_shares_after_cutoff(cutoff)
+            diff_meta = await self.store.get_meta("block_difficulty", "1") or "1"
+            try:
+                block_diff = max(int(float(diff_meta)), 1)
+            except ValueError:
+                block_diff = 1
+            finder, credit = await self.store.pending_finder_credit()
+            max_seq = max((s.seq for s in shares), default=0)
+            # Keep only extras newer than this snapshot
+            self._extras = [s for s in self._extras if s.seq > max_seq]
+            self._cached = _CachedWindow(
+                cutoff_seq=cutoff,
+                shares=shares,
+                block_diff=block_diff,
+                finder=finder or "",
+                finder_credit=int(credit or 0),
+                computed_at=time.monotonic(),
+                max_seq=max_seq,
+            )
+            self._dirty = False
+            self._refresh_count += 1
+            log.info(
+                "coinbaser cache refresh #%s shares=%s cutoff=%s max_seq=%s finder=%s credit=%s in %.3fs",
+                self._refresh_count,
+                len(shares),
+                cutoff,
+                max_seq,
+                (finder or "")[:12],
+                credit,
+                time.monotonic() - t0,
+            )
+
+    def _kick_refresh(self) -> None:
+        if self._refresh_task and not self._refresh_task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self.refresh(force=True)
+            except Exception:  # noqa: BLE001
+                log.exception("coinbaser cache refresh failed")
+
+        self._refresh_task = asyncio.create_task(_run())
+
+    def _compute_outs_sync(
+        self,
+        shares: list[Share],
+        value: int,
+        *,
+        block_diff: int,
+        finder: str,
+        finder_credit: int,
+    ) -> list[dict]:
+        tides = split_reward(
+            shares,
+            reward_sats=value,
+            block_difficulty=block_diff,
+            window_blocks=self.settings.window_blocks,
+            miner_bps=miner_reward_bps(self.settings),
+            min_output_sats=self.settings.min_output_sats,
+            pool_ops_address=self.settings.pool_ops_address,
+            cutoff_seq=None,  # shares already window-trimmed
+            window_mode="pool_finds",
+        )
+        outs = coinbase_suggestion(
+            tides,
+            pool_ops_address=self.settings.pool_ops_address or "ops",
+            finder_address=finder or "",
+            finder_credit_sats=finder_credit,
+            min_output_sats=self.settings.min_output_sats,
+        )
+        if not outs:
+            outs = [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
+        return outs
+
+    async def build_outs(self, value: int) -> list[dict]:
+        if self._cached is None:
+            await self.refresh(force=True)
+        elif not self.is_fresh():
+            self._kick_refresh()
+        c = self._cached
+        if c is None:
+            # refresh failed — ops-only fallback
+            return [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
+        shares = self._merged_shares(c)
+        return await asyncio.to_thread(
+            self._compute_outs_sync,
+            shares,
+            int(value),
+            block_diff=c.block_diff,
+            finder=c.finder,
+            finder_credit=c.finder_credit,
+        )
+
+    async def run_background(self) -> None:
+        # Prime once, then periodic refresh
+        try:
+            await self.refresh(force=True)
+        except Exception:  # noqa: BLE001
+            log.exception("coinbaser cache initial refresh failed")
+        while True:
+            try:
+                await asyncio.sleep(max(self.ttl(), 1.0))
+                await self.refresh(force=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("coinbaser cache background refresh failed")
+
+    def start_background(self) -> None:
+        if self._bg_task and not self._bg_task.done():
+            return
+        self._bg_task = asyncio.create_task(self.run_background())
+
+
+class QuarantineGuard:
+    """In-memory attempt rings + throttled auto-Q checks.
+
+    Clean miners: auto-Q evaluated every N attempts from the ring (no SQL stats).
+    Hot miners (reject-27 in ring): evaluated every reject path.
+    Quarantine / probation flags cached after first DB read.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        win = int(getattr(settings, "quarantine_reject27_window", 20) or 20)
+        self._rings: dict[str, deque] = defaultdict(lambda: deque(maxlen=max(win, 20)))
+        self._since_check: dict[str, int] = defaultdict(int)
+        self._hot: set[str] = set()
+        self._q: dict[str, dict | None] = {}
+        self._probation_cleared: set[str] = set()
+        self._probation_known: set[str] = set()
+
+    def note_attempt(
+        self,
+        address: str,
+        *,
+        accepted: bool,
+        reason_code: int = 0,
+        why: str = "",
+    ) -> None:
+        addr = (address or "").strip()
+        if not addr:
+            return
+        why_s = (why or "").strip() or "ok"
+        self._rings[addr].appendleft((bool(accepted), int(reason_code), why_s))
+        self._since_check[addr] += 1
+        if int(reason_code) == DATUM_REJECT_BAD_COINBASE_OUTPUTS:
+            self._hot.add(addr)
+
+    def should_check_auto_q(self, address: str) -> bool:
+        addr = (address or "").strip()
+        if not addr:
+            return False
+        if addr in self._hot:
+            return True
+        every = int(getattr(self.settings, "quarantine_check_every_n", 10) or 10)
+        if self._since_check[addr] >= every:
+            self._since_check[addr] = 0
+            return True
+        return False
+
+    def ring_stats(self, address: str, limit: int = 20) -> tuple[int, int]:
+        items = list(self._rings.get(address, ()))[:limit]
+        rej = sum(1 for acc, rc, _ in items if (not acc) and int(rc) == DATUM_REJECT_BAD_COINBASE_OUTPUTS)
+        return rej, len(items)
+
+    def consecutive_good(self, address: str, limit: int = 20) -> int:
+        n = 0
+        for acc, rc, why in list(self._rings.get(address, ()))[:limit]:
+            if acc and int(rc) == 0 and why in _GOOD_ATTEMPT_WHY:
+                n += 1
+            else:
+                break
+        return n
+
+    def cache_quarantine(self, address: str, q: dict | None) -> None:
+        self._q[address] = q
+
+    def get_cached_quarantine(self, address: str) -> tuple[bool, dict | None]:
+        """Return (known, value). known=False means must hit DB."""
+        if address in self._q:
+            return True, self._q[address]
+        return False, None
+
+    def mark_probation_cleared(self, address: str) -> None:
+        self._probation_known.add(address)
+        self._probation_cleared.add(address)
+
+    def get_cached_probation_cleared(self, address: str) -> tuple[bool, bool]:
+        if address in self._probation_known:
+            return True, address in self._probation_cleared
+        return False, False
+
+    def clear_hot_if_clean(self, address: str) -> None:
+        rej, total = self.ring_stats(address, limit=20)
+        if total >= 5 and rej == 0:
+            self._hot.discard(address)
 
 
 def header_xor_feedback(i: int) -> int:
@@ -181,6 +460,9 @@ class DatumPrimeSession:
         settings: Settings,
         store: Store,
         on_share: AcceptShareCb | None = None,
+        *,
+        coinbaser_cache: CoinbaserSplitCache | None = None,
+        quarantine_guard: QuarantineGuard | None = None,
     ) -> None:
         self.reader = reader
         self.writer = writer
@@ -188,6 +470,8 @@ class DatumPrimeSession:
         self.settings = settings
         self.store = store
         self.on_share = on_share
+        self.coinbaser_cache = coinbaser_cache or CoinbaserSplitCache(store, settings)
+        self.qguard = quarantine_guard or QuarantineGuard(settings)
         self.send_hdr_key = 0
         self.recv_hdr_key = 0
         self.send_nonce = bytearray(24)
@@ -210,24 +494,69 @@ class DatumPrimeSession:
         """True if any recent coinbaser had ≥2 value payouts (fair split, not ops-only)."""
         return any(int(v.get("n_value_outs") or 0) >= 2 for v in self.recent_coinbasers.values())
 
+    async def _get_quarantine_cached(self, address: str) -> dict | None:
+        known, q = self.qguard.get_cached_quarantine(address)
+        if known:
+            return q
+        q = await self.store.get_quarantine(address)
+        self.qguard.cache_quarantine(address, q)
+        return q
+
+    async def _is_probation_cleared_cached(self, address: str) -> bool:
+        known, cleared = self.qguard.get_cached_probation_cleared(address)
+        if known:
+            return cleared
+        cleared = await self.store.is_probation_cleared(address)
+        if cleared:
+            self.qguard.mark_probation_cleared(address)
+        else:
+            self.qguard._probation_known.add(address)
+        return cleared
+
+    async def _consecutive_good_cached(self, address: str, *, need: int) -> int:
+        """Prefer in-memory ring; seed from DB once if ring too short."""
+        limit = max(need + 5, 20)
+        ring_n = len(self.qguard._rings.get(address, ()))
+        if ring_n >= need:
+            return self.qguard.consecutive_good(address, limit=limit)
+        # Seed from DB then recompute
+        db_n = await self.store.consecutive_good_attempts(address, limit=limit)
+        return db_n
+
     async def _maybe_quarantine(self, address: str, *, is_block: bool) -> bool:
         """Return True if address is (or becomes) quarantined — freeze new share credit."""
-        q = await self.store.get_quarantine(address)
+        if self.settings.quarantine_allowlisted(address):
+            q = await self._get_quarantine_cached(address)
+            if q:
+                await self.store.clear_quarantine(address)
+                self.qguard.cache_quarantine(address, None)
+                log.warning(
+                    "QUARANTINE CLEARED address=%s (allowlisted)", address
+                )
+            return False
+        q = await self._get_quarantine_cached(address)
         if q:
             return True
+        # Throttle: clean miners every N attempts; hot (r27) every time.
+        if not self.qguard.should_check_auto_q(address):
+            return False
         win = int(getattr(self.settings, "quarantine_reject27_window", 20) or 20)
         ratio = float(getattr(self.settings, "quarantine_reject27_ratio", 0.5) or 0.5)
         min_n = int(getattr(self.settings, "quarantine_reject27_min_samples", 3) or 3)
-        rej, total = await self.store.recent_attempt_stats(address, limit=win)
+        rej, total = self.qguard.ring_stats(address, limit=win)
+        # If ring is thin, fall back to SQL once to avoid under-quarantining.
+        if total < min_n:
+            rej, total = await self.store.recent_attempt_stats(address, limit=win)
         reason = None
-        # Block/payout mismatch: reject that share + no finder (caller already did).
         # Do NOT quarantine on a single bad block — only on sustained reject-27 rate.
         if total >= min_n and (rej / float(total)) >= ratio:
             reason = f"reject-27 rate {rej}/{total} over last {win} attempts"
         if reason:
             await self.store.set_quarantine(address, reason)
+            self.qguard.cache_quarantine(address, {"reason": reason, "at": "now"})
             log.warning("QUARANTINE address=%s reason=%s", address, reason)
             return True
+        self.qguard.clear_hot_if_clean(address)
         return False
 
 
@@ -380,35 +709,9 @@ class DatumPrimeSession:
         if len(msg) < 42:
             return
         value = struct.unpack_from("<Q", msg, 1)[0]
-        # Build TIDES suggestion (empty window → 100% ops)
-        shares = await self.store.list_shares_newest(limit=50_000)
-        diff_meta = await self.store.get_meta("block_difficulty", "1") or "1"
-        try:
-            block_diff = max(int(float(diff_meta)), 1)
-        except ValueError:
-            block_diff = 1
-        cutoff = await self.store.payout_window_cutoff_seq(self.settings.window_blocks)
-        tides = split_reward(
-            shares,
-            reward_sats=value,
-            block_difficulty=block_diff,
-            window_blocks=self.settings.window_blocks,
-            miner_bps=miner_reward_bps(self.settings),
-            min_output_sats=self.settings.min_output_sats,
-            pool_ops_address=self.settings.pool_ops_address,
-            cutoff_seq=cutoff,
-            window_mode="pool_finds",
-        )
-        finder, credit = await self.store.pending_finder_credit()
-        outs = coinbase_suggestion(
-            tides,
-            pool_ops_address=self.settings.pool_ops_address or "ops",
-            finder_address=finder or "",
-            finder_credit_sats=credit,
-            min_output_sats=self.settings.min_output_sats,
-        )
-        if not outs:
-            outs = [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
+        # Cached window shares (7 confirmed finds + current); rescale to this value
+        # on a worker thread. No LIMIT 50_000 scan on the event loop.
+        outs = await self.coinbaser_cache.build_outs(value)
 
         blob = bytearray()
         sent_id = self.coinbaser_id & 0xFF
@@ -591,6 +894,9 @@ class DatumPrimeSession:
         paid_n = await self.store.mark_finder_credits_paid(resolved_height)
         bonus = reward_sats * finder_credit_bps(self.settings) // 10_000
         await self.store.open_finder_credit(resolved_height, finder, bonus)
+        # Finder credit + window cutoff may change — force coinbaser reload.
+        self.coinbaser_cache.invalidate(f"block found height={resolved_height}")
+        self.coinbaser_cache._kick_refresh()
         log.info(
             "BLOCK FOUND finder=%s worker=%s height=%s hash=%s reward=%s bonus_next=%s (marked_paid=%s, pending confirm)",
             finder,
@@ -665,14 +971,77 @@ class DatumPrimeSession:
                 worker=worker,
                 is_block=is_block,
             )
+            self.qguard.note_attempt(
+                address,
+                accepted=False,
+                reason_code=DATUM_REJECT_BAD_COINBASE_OUTPUTS,
+                why="coinbase not multi-out",
+            )
             await self._maybe_quarantine(address, is_block=is_block)
             return
 
 
-        # Quarantine rehab: good multi-out shares can lift the freeze after 3 in a row.
+        # Quarantine rehab: good multi-out shares can lift the freeze after N in a row.
         # Bad coinbase already returned above (reject 27, no finder).
-        q = await self.store.get_quarantine(address)
+        # Ops-sticky reasons (prefix "ops ") never auto-clear.
+        q = await self._get_quarantine_cached(address)
+        if q and str((q or {}).get("reason") or "").startswith("ops "):
+            await self.store.record_share_attempt(
+                address,
+                accepted=False,
+                reason_code=DATUM_REJECT_OTHER,
+                why="ops quarantine hold (no rehab)",
+                worker=worker,
+                is_block=is_block,
+            )
+            self.qguard.note_attempt(
+                address,
+                accepted=False,
+                reason_code=DATUM_REJECT_OTHER,
+                why="ops quarantine hold (no rehab)",
+            )
+            _reject(DATUM_REJECT_OTHER, "ops quarantine hold")
+            resp = bytearray()
+            resp.append(0x8F)
+            resp.append(DATUM_POW_REJECTED)
+            resp.extend(struct.pack("<H", DATUM_REJECT_OTHER))
+            resp.extend(struct.pack("<I", nonce))
+            resp.append(target_byte & 0xFF)
+            resp.append(job_id & 0xFF)
+            await self.send_channel(bytes(resp), signed=False)
+            return
+        if q and self.settings.quarantine_allowlisted(address):
+            await self.store.clear_quarantine(address)
+            self.qguard.cache_quarantine(address, None)
+            log.warning("QUARANTINE CLEARED address=%s (allowlisted)", address)
+            q = None
+        rehab_need = int(getattr(self.settings, "quarantine_rehab_shares", 5) or 5)
         if q:
+            if not self._assigned_multi_out():
+                await self.store.record_share_attempt(
+                    address,
+                    accepted=False,
+                    reason_code=DATUM_REJECT_OTHER,
+                    why="rehab-wait-multiout",
+                    worker=worker,
+                    is_block=is_block,
+                )
+                self.qguard.note_attempt(
+                    address,
+                    accepted=False,
+                    reason_code=DATUM_REJECT_OTHER,
+                    why="rehab-wait-multiout",
+                )
+                _reject(DATUM_REJECT_OTHER, "quarantine rehab waiting for multi-out job")
+                resp = bytearray()
+                resp.append(0x8F)
+                resp.append(DATUM_POW_REJECTED)
+                resp.extend(struct.pack("<H", DATUM_REJECT_OTHER))
+                resp.extend(struct.pack("<I", nonce))
+                resp.append(target_byte & 0xFF)
+                resp.append(job_id & 0xFF)
+                await self.send_channel(bytes(resp), signed=False)
+                return
             await self.store.record_share_attempt(
                 address,
                 accepted=True,
@@ -681,12 +1050,14 @@ class DatumPrimeSession:
                 worker=worker,
                 is_block=is_block,
             )
-            streak = await self.store.consecutive_good_attempts(address, limit=20)
-            need = 3
-            if streak < need:
+            self.qguard.note_attempt(
+                address, accepted=True, reason_code=0, why="rehab-good"
+            )
+            streak = await self._consecutive_good_cached(address, need=rehab_need)
+            if streak < rehab_need:
                 _reject(
                     DATUM_REJECT_OTHER,
-                    f"quarantine rehab {streak}/{need} (good split; no credit yet)",
+                    f"quarantine rehab {streak}/{rehab_need} (good split; no credit yet)",
                 )
                 resp = bytearray()
                 resp.append(0x8F)
@@ -698,8 +1069,76 @@ class DatumPrimeSession:
                 await self.send_channel(bytes(resp), signed=False)
                 return
             await self.store.clear_quarantine(address)
+            self.qguard.cache_quarantine(address, None)
             log.warning(
                 "QUARANTINE CLEARED address=%s after %s good multi-out shares",
+                address,
+                streak,
+            )
+            # fall through — credit this share
+
+        # New-miner probation: do not assume good at first connect. No window credit
+        # until N consecutive good multi-out shares (same N as rehab by default).
+        probation_need = int(getattr(self.settings, "probation_good_shares", 5) or 5)
+        if not await self._is_probation_cleared_cached(address):
+            if not self._assigned_multi_out():
+                await self.store.record_share_attempt(
+                    address,
+                    accepted=False,
+                    reason_code=DATUM_REJECT_OTHER,
+                    why="probation-wait-multiout",
+                    worker=worker,
+                    is_block=is_block,
+                )
+                self.qguard.note_attempt(
+                    address,
+                    accepted=False,
+                    reason_code=DATUM_REJECT_OTHER,
+                    why="probation-wait-multiout",
+                )
+                _reject(
+                    DATUM_REJECT_OTHER,
+                    "new-miner probation: waiting for multi-out job",
+                )
+                resp = bytearray()
+                resp.append(0x8F)
+                resp.append(DATUM_POW_REJECTED)
+                resp.extend(struct.pack("<H", DATUM_REJECT_OTHER))
+                resp.extend(struct.pack("<I", nonce))
+                resp.append(target_byte & 0xFF)
+                resp.append(job_id & 0xFF)
+                await self.send_channel(bytes(resp), signed=False)
+                return
+            await self.store.record_share_attempt(
+                address,
+                accepted=True,
+                reason_code=0,
+                why="probation-good",
+                worker=worker,
+                is_block=is_block,
+            )
+            self.qguard.note_attempt(
+                address, accepted=True, reason_code=0, why="probation-good"
+            )
+            streak = await self._consecutive_good_cached(address, need=probation_need)
+            if streak < probation_need:
+                _reject(
+                    DATUM_REJECT_OTHER,
+                    f"new-miner probation {streak}/{probation_need} (no credit yet)",
+                )
+                resp = bytearray()
+                resp.append(0x8F)
+                resp.append(DATUM_POW_REJECTED)
+                resp.extend(struct.pack("<H", DATUM_REJECT_OTHER))
+                resp.extend(struct.pack("<I", nonce))
+                resp.append(target_byte & 0xFF)
+                resp.append(job_id & 0xFF)
+                await self.send_channel(bytes(resp), signed=False)
+                return
+            await self.store.clear_probation(address)
+            self.qguard.mark_probation_cleared(address)
+            log.warning(
+                "PROBATION CLEARED address=%s after %s good multi-out shares",
                 address,
                 streak,
             )
@@ -728,8 +1167,17 @@ class DatumPrimeSession:
             if credit > 0:
                 if self.on_share:
                     await self.on_share(address, credit, worker)
+                    # Callback may not return seq; 15s background refresh catches up.
                 else:
-                    await self.store.append_share(address, credit, worker=worker, fee_bps=0)
+                    row = await self.store.append_share(
+                        address, credit, worker=worker, fee_bps=0
+                    )
+                    self.coinbaser_cache.note_share(
+                        seq=row.seq,
+                        address=row.address,
+                        work=row.work,
+                        fee_bps=row.fee_bps,
+                    )
             await self.store.record_share_attempt(
                 address,
                 accepted=True,
@@ -738,6 +1186,8 @@ class DatumPrimeSession:
                 worker=worker,
                 is_block=is_block,
             )
+            self.qguard.note_attempt(address, accepted=True, reason_code=0, why="ok")
+            self.qguard.clear_hot_if_clean(address)
             status = DATUM_POW_ACCEPTED
             reason = 0
             if cap > 0 and credit < work:
@@ -845,9 +1295,19 @@ async def handle_client(
     pool_keys: PoolKeys,
     settings: Settings,
     store: Store,
+    coinbaser_cache: CoinbaserSplitCache,
+    quarantine_guard: QuarantineGuard,
 ) -> None:
     peer = writer.get_extra_info("peername")
-    sess = DatumPrimeSession(reader, writer, pool_keys, settings, store)
+    sess = DatumPrimeSession(
+        reader,
+        writer,
+        pool_keys,
+        settings,
+        store,
+        coinbaser_cache=coinbaser_cache,
+        quarantine_guard=quarantine_guard,
+    )
     try:
         await sess.run()
     except HandshakeError as exc:
@@ -871,11 +1331,22 @@ async def start_datum_prime(
     keys_path: Path,
 ) -> tuple[asyncio.AbstractServer, PoolKeys]:
     keys = PoolKeys.load_or_create(keys_path)
+    coinbaser_cache = CoinbaserSplitCache(store, settings)
+    quarantine_guard = QuarantineGuard(settings)
+    coinbaser_cache.start_background()
     server = await asyncio.start_server(
-        lambda r, w: handle_client(r, w, keys, settings, store),
+        lambda r, w: handle_client(
+            r, w, keys, settings, store, coinbaser_cache, quarantine_guard
+        ),
         host=settings.host,
         port=settings.datum_prime_port,
     )
     socks = ", ".join(str(s.getsockname()) for s in server.sockets or [])
-    log.info("DATUM Prime listening on %s pubkey=%s", socks, keys.pubkey_hex)
+    log.info(
+        "DATUM Prime listening on %s pubkey=%s coinbaser_cache=%ss q_check_every=%s",
+        socks,
+        keys.pubkey_hex,
+        coinbaser_cache.ttl(),
+        int(getattr(settings, "quarantine_check_every_n", 10) or 10),
+    )
     return server, keys

@@ -64,6 +64,30 @@ class Settings(BaseSettings):
     quarantine_reject27_ratio: float = 0.5
     quarantine_reject27_window: int = 20
     quarantine_reject27_min_samples: int = 3
+    # Auto-clear (non-ops) quarantine after this many consecutive good multi-out shares.
+    quarantine_rehab_shares: int = Field(default=5, ge=1, le=50)
+    # New payout addresses: no window credit until this many consecutive good
+    # multi-out shares (do not assume good at first connect).
+    probation_good_shares: int = Field(default=5, ge=1, le=50)
+    # Comma/space-separated payout addresses that never auto-quarantine (still
+    # subject to reject-27 on bad coinbase shares; allowlist only skips the freeze).
+    quarantine_allowlist: str = ""
+    # Auto-Q scan throttle: clean miners checked every N attempts (in-memory ring).
+    # Hot miners (recent reject-27 in ring) are checked every attempt.
+    quarantine_check_every_n: int = Field(default=10, ge=1, le=200)
+
+    # Coinbaser split cache: reuse window weights; full reload every N seconds
+    # or on invalidate (new confirmed find / finder credit). Gateway work_update
+    # is separate (DATUM) — do not lower that to fix Prime load.
+    coinbaser_cache_seconds: float = Field(default=15.0, ge=1.0, le=300.0)
+
+    def quarantine_allowlisted(self, address: str) -> bool:
+        addr = (address or "").strip()
+        if not addr:
+            return False
+        raw = self.quarantine_allowlist or ""
+        allowed = {a.strip() for a in raw.replace(";", ",").replace(" ", ",").split(",") if a.strip()}
+        return addr in allowed
 
     def address_work_cap(self) -> int:
         """Max Diff1 work credited per address per window. 0 = unlimited (no ASIC throttle)."""

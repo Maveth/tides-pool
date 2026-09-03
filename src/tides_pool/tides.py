@@ -64,7 +64,7 @@ def window_since_seq(
     out: list[Share] = []
     for s in shares_newest_first:
         if s.work < 1:
-            raise ValueError(f"share seq={s.seq} has non-positive work")
+            continue  # ops-excluded / invalid — omit from payout window
         if s.seq > cutoff_seq:
             out.append(s)
     return out
@@ -82,7 +82,7 @@ def select_window(
     acc = 0
     for s in shares_newest_first:
         if s.work < 1:
-            raise ValueError(f"share seq={s.seq} has non-positive work")
+            continue  # ops-excluded / invalid
         selected.append(s)
         acc += s.work
         if acc >= target:

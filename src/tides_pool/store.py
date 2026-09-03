@@ -56,6 +56,14 @@ class Store(ABC):
     async def list_shares_newest(self, limit: int = 10_000) -> list[Share]: ...
 
     @abstractmethod
+    async def list_shares_after_cutoff(self, cutoff_seq: int | None) -> list[Share]:
+        """Payout-window shares newest-first: seq > cutoff (or all if cutoff is None).
+
+        No row cap — window is bounded by confirmed pool finds, not LIMIT 50_000.
+        """
+        ...
+
+    @abstractmethod
     async def list_shares_for_address(
         self, address: str, *, limit: int = 50, offset: int = 0
     ) -> list[ShareRow]: ...
@@ -238,7 +246,15 @@ class Store(ABC):
 
     @abstractmethod
     async def consecutive_good_attempts(self, address: str, *, limit: int = 20) -> int:
-        """Count trailing accepted (reason 0) attempts for address."""
+        """Count trailing good multi-out attempts (ok / rehab-good / probation-good)."""
+
+    @abstractmethod
+    async def is_probation_cleared(self, address: str) -> bool:
+        """True if address may receive window credit (graduated probation)."""
+
+    @abstractmethod
+    async def clear_probation(self, address: str) -> None:
+        """Mark address as graduated from new-miner probation."""
 
 
 class MemoryStore(Store):
@@ -250,6 +266,7 @@ class MemoryStore(Store):
         self._credits: list[tuple[int, str, int, int | None]] = []  # height, addr, sats, paid
         self._attempts: list[dict] = []
         self._quarantine: dict[str, dict] = {}
+        self._probation_cleared: set[str] = set()
 
     async def close(self) -> None:
         return None
@@ -280,6 +297,16 @@ class MemoryStore(Store):
     async def list_shares_newest(self, limit: int = 10_000) -> list[Share]:
         rows = list(reversed(self._shares))[:limit]
         return [Share(seq=r.seq, address=r.address, work=r.work, fee_bps=r.fee_bps) for r in rows]
+
+    async def list_shares_after_cutoff(self, cutoff_seq: int | None) -> list[Share]:
+        out: list[Share] = []
+        for r in reversed(self._shares):
+            if cutoff_seq is not None and r.seq <= cutoff_seq:
+                break
+            if r.work < 1:
+                continue
+            out.append(Share(seq=r.seq, address=r.address, work=r.work, fee_bps=r.fee_bps))
+        return out
 
     async def list_shares_for_address(
         self, address: str, *, limit: int = 50, offset: int = 0
@@ -667,14 +694,26 @@ class MemoryStore(Store):
 
     async def consecutive_good_attempts(self, address: str, *, limit: int = 20) -> int:
         rows = [r for r in reversed(self._attempts) if r["address"] == address][:limit]
+        good_why = {"ok", "rehab-good", "probation-good"}
         n = 0
         for r in rows:
-            if r.get("accepted") and int(r.get("reason_code") or 0) == 0:
+            why = (r.get("why") or "ok").strip() or "ok"
+            if (
+                r.get("accepted")
+                and int(r.get("reason_code") or 0) == 0
+                and why in good_why
+            ):
                 n += 1
             else:
                 break
         return n
 
+    async def is_probation_cleared(self, address: str) -> bool:
+        return address in self._probation_cleared
+
+    async def clear_probation(self, address: str) -> None:
+        if address:
+            self._probation_cleared.add(address)
 
 
 class PostgresStore(Store):
@@ -716,6 +755,19 @@ class PostgresStore(Store):
             )
             await conn.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname_seen_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS probation_cleared_at TIMESTAMPTZ"
+            )
+            # One-shot: graduate anyone who already has credited shares. New addresses
+            # stay in probation until they prove N good multi-out shares.
+            await conn.execute(
+                """
+                UPDATE users u
+                SET probation_cleared_at = COALESCE(u.first_seen, now())
+                WHERE u.probation_cleared_at IS NULL
+                  AND EXISTS (SELECT 1 FROM shares s WHERE s.address = u.address LIMIT 1)
+                """
             )
             await conn.execute(
                 """
@@ -794,6 +846,30 @@ class PostgresStore(Store):
             """,
             limit,
         )
+        return [
+            Share(seq=r["seq"], address=r["address"], work=r["work"], fee_bps=r["fee_bps"])
+            for r in rows
+        ]
+
+    async def list_shares_after_cutoff(self, cutoff_seq: int | None) -> list[Share]:
+        """All payout-window shares (newest-first). No artificial LIMIT."""
+        if cutoff_seq is None:
+            rows = await self._p().fetch(
+                """
+                SELECT seq, address, work, fee_bps FROM shares
+                WHERE work >= 1
+                ORDER BY seq DESC
+                """
+            )
+        else:
+            rows = await self._p().fetch(
+                """
+                SELECT seq, address, work, fee_bps FROM shares
+                WHERE seq > $1 AND work >= 1
+                ORDER BY seq DESC
+                """,
+                int(cutoff_seq),
+            )
         return [
             Share(seq=r["seq"], address=r["address"], work=r["work"], fee_bps=r["fee_bps"])
             for r in rows
@@ -1612,7 +1688,7 @@ class PostgresStore(Store):
     async def consecutive_good_attempts(self, address: str, *, limit: int = 20) -> int:
         rows = await self._p().fetch(
             """
-            SELECT accepted, reason_code FROM share_attempts
+            SELECT accepted, reason_code, why FROM share_attempts
             WHERE address = $1
             ORDER BY attempted_at DESC, id DESC
             LIMIT $2
@@ -1620,13 +1696,41 @@ class PostgresStore(Store):
             address,
             limit,
         )
+        good_why = {"ok", "rehab-good", "probation-good"}
         n = 0
         for r in rows:
-            if r["accepted"] and int(r["reason_code"] or 0) == 0:
+            why = (r["why"] or "ok").strip() or "ok"
+            if r["accepted"] and int(r["reason_code"] or 0) == 0 and why in good_why:
                 n += 1
             else:
                 break
         return n
+
+    async def is_probation_cleared(self, address: str) -> bool:
+        addr = (address or "").strip()
+        if not addr:
+            return False
+        val = await self._p().fetchval(
+            "SELECT probation_cleared_at FROM users WHERE address = $1",
+            addr,
+        )
+        return val is not None
+
+    async def clear_probation(self, address: str) -> None:
+        addr = (address or "").strip()
+        if not addr:
+            return
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users(address, first_seen, last_seen, probation_cleared_at)
+                VALUES($1, now(), now(), now())
+                ON CONFLICT (address) DO UPDATE SET
+                  probation_cleared_at = COALESCE(users.probation_cleared_at, now()),
+                  last_seen = now()
+                """,
+                addr,
+            )
 
 
 def window_slice(shares_newest_first: list[Share], target_work: int) -> list[Share]:
