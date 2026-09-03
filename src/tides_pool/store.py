@@ -146,6 +146,11 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    async def count_manual_payouts_pending(self) -> int:
+        """Confirmed/pending ops_manual finds not yet marked done."""
+        ...
+
+    @abstractmethod
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]: ...
 
     @abstractmethod
@@ -497,6 +502,15 @@ class MemoryStore(Store):
                 ),
             )
             break
+
+    async def count_manual_payouts_pending(self) -> int:
+        return sum(
+            1
+            for b in self._blocks
+            if b.payout_mode == "ops_manual"
+            and not b.manual_payout_done
+            and b.status in ("pending", "confirmed")
+        )
 
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]:
         return self._blocks[:limit]
@@ -1298,6 +1312,17 @@ class PostgresStore(Store):
             f"UPDATE blocks SET {', '.join(sets)} WHERE height = $1",
             *args,
         )
+
+    async def count_manual_payouts_pending(self) -> int:
+        val = await self._p().fetchval(
+            """
+            SELECT COUNT(*) FROM blocks
+            WHERE COALESCE(payout_mode, 'onchain_split') = 'ops_manual'
+              AND COALESCE(manual_payout_done, false) = false
+              AND COALESCE(status, 'confirmed') IN ('pending', 'confirmed')
+            """
+        )
+        return int(val or 0)
 
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]:
         rows = await self._p().fetch(

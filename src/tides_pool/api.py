@@ -51,11 +51,12 @@ _sync_task: asyncio.Task | None = None
 _rpc_ok = False
 _prime_server = None
 _pool_pubkey_hex = ""
+_coinbaser_cache = None  # CoinbaserSplitCache | None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global store, _sync_task, _rpc_ok, _prime_server, _pool_pubkey_hex
+    global store, _sync_task, _rpc_ok, _prime_server, _pool_pubkey_hex, _coinbaser_cache
     logging.basicConfig(level=logging.INFO)
     dsn = settings.database_url
     if dsn.startswith("postgresql"):
@@ -85,11 +86,14 @@ async def lifespan(_app: FastAPI):
 
     keys_path = Path(os.environ.get("TIDES_POOL_KEYS_PATH", "/app/data/pool_keys.json"))
     try:
-        _prime_server, keys = await start_datum_prime(settings, store, keys_path)
+        _prime_server, keys, _coinbaser_cache = await start_datum_prime(
+            settings, store, keys_path
+        )
         _pool_pubkey_hex = keys.pubkey_hex
     except Exception as exc:  # noqa: BLE001
         log.exception("DATUM Prime failed to start: %s", exc)
         _prime_server = None
+        _coinbaser_cache = None
 
     _stop_sync.clear()
     _sync_task = asyncio.create_task(chain_sync_loop(store, settings, _stop_sync))
@@ -236,13 +240,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260903a"',
+        'src="/static/app.js?v=20260903b"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260903a"',
+        'href="/static/style.css?v=20260903b"',
         html,
         count=1,
     )
@@ -307,8 +311,111 @@ async def blocks_page() -> HTMLResponse:
 
 
 @app.get("/health", response_model=HealthResponse)
+@app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    return HealthResponse(status="ok", version=__version__, network=settings.network)
+    """Real ops health — not a hard-coded ok.
+
+    down: Prime not listening or DB unreachable
+    degraded: RPC bad, stale coinbaser cache, or recent outs≤1 while window active
+    ok: otherwise
+    """
+    warnings: list[str] = []
+    checks: dict = {
+        "prime_listening": False,
+        "gateway_sessions": 0,
+        "rpc_ok": bool(_rpc_ok),
+        "db_ok": False,
+        "coinbaser": {},
+        "manual_payouts_pending": 0,
+    }
+    status = "ok"
+
+    # Prime
+    prime_ok = _prime_server is not None and getattr(_prime_server, "sockets", None)
+    checks["prime_listening"] = bool(prime_ok)
+    if not prime_ok:
+        status = "down"
+        warnings.append("prime_not_listening")
+
+    # DB
+    try:
+        await store.max_share_seq()
+        checks["db_ok"] = True
+        try:
+            checks["manual_payouts_pending"] = int(
+                await store.count_manual_payouts_pending()
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"manual_payout_count_failed:{exc}")
+    except Exception as exc:  # noqa: BLE001
+        checks["db_ok"] = False
+        status = "down"
+        warnings.append(f"db_unreachable:{exc}")
+
+    # Coinbaser cache / reply metrics
+    cb = {}
+    if _coinbaser_cache is not None:
+        try:
+            cb = dict(_coinbaser_cache.health_snapshot())
+            checks["gateway_sessions"] = int(cb.get("gateway_sessions") or 0)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"coinbaser_metrics_failed:{exc}")
+            cb = {}
+    else:
+        warnings.append("coinbaser_cache_missing")
+        if status != "down":
+            status = "degraded"
+    checks["coinbaser"] = cb
+
+    # RPC
+    if not checks["rpc_ok"] and status != "down":
+        status = "degraded"
+        warnings.append("rpc_not_ok")
+
+    # Stale / weak coinbaser
+    age = cb.get("cache_age_s")
+    ttl = float(cb.get("cache_ttl_s") or 15.0)
+    if age is not None and age > max(ttl * 2.5, 45.0):
+        if status != "down":
+            status = "degraded"
+        warnings.append(f"coinbaser_cache_stale:{age}s")
+    if cb.get("last_refresh_error"):
+        if status != "down":
+            status = "degraded"
+        warnings.append("coinbaser_refresh_error")
+
+    # Recent ops-only-ish replies while window has work
+    outs1 = int(cb.get("outs1_recent") or 0)
+    recent_n = int(cb.get("outs_recent_n") or 0)
+    last_outs = cb.get("last_outs")
+    shares = int(cb.get("cache_shares") or 0)
+    if shares > 0 and last_outs is not None and int(last_outs) <= 1:
+        if status != "down":
+            status = "degraded"
+        warnings.append("coinbaser_last_outs_le_1")
+    if recent_n >= 10 and outs1 / float(recent_n) >= 0.2:
+        if status != "down":
+            status = "degraded"
+        warnings.append(f"coinbaser_outs1_rate:{outs1}/{recent_n}")
+
+    p99 = cb.get("p99_reply_ms")
+    if p99 is not None and float(p99) >= 2000.0:
+        if status != "down":
+            status = "degraded"
+        warnings.append(f"coinbaser_p99_ms:{p99}")
+
+    if checks["manual_payouts_pending"]:
+        warnings.append(f"manual_payouts_pending:{checks['manual_payouts_pending']}")
+
+    # Always 200 so the strip can render degraded without treating it as outage.
+    # Use status field for severity; monitors can alert on status!=ok.
+    return HealthResponse(
+        status=status,
+        version=__version__,
+        network=settings.network,
+        checks=checks,
+        warnings=warnings,
+    )
 
 
 @app.get("/stats", response_model=PoolStats)

@@ -5,6 +5,48 @@ function quarantineBadge(c) {
   return ` <span class="badge-quarantine" title="${tip}">⚠ quarantined</span>`;
 }
 
+/** Header status chip from /health (Prime / coinbaser / RPC). */
+async function refreshHealthStrip() {
+  const el = document.getElementById("healthStrip");
+  if (!el) return;
+  try {
+    const h = await jget("/api/health");
+    const st = (h && h.status) || "ok";
+    const cb = (h && h.checks && h.checks.coinbaser) || {};
+    const gw = (h && h.checks && h.checks.gateway_sessions) || 0;
+    const outs = cb.last_outs;
+    const age = cb.cache_age_s;
+    const manual = (h && h.checks && h.checks.manual_payouts_pending) || 0;
+    const warn = (h && h.warnings) || [];
+    let label = "🟢 ok";
+    if (st === "degraded") label = "🟡 degraded";
+    else if (st === "down") label = "🔴 down";
+    const bits = [];
+    bits.push(`GW ${gw}`);
+    if (outs != null) bits.push(`outs ${outs}`);
+    if (age != null) bits.push(`cache ${age}s`);
+    if (manual) bits.push(`manual ${manual}`);
+    el.textContent = `${label} · ${bits.join(" · ")}`;
+    el.className =
+      "health-strip " +
+      (st === "ok"
+        ? "health-ok"
+        : st === "degraded"
+          ? "health-degraded"
+          : st === "down"
+            ? "health-down"
+            : "health-unknown");
+    const tip = warn.length
+      ? warn.join("; ")
+      : "Prime / coinbaser / RPC health — click for JSON";
+    el.title = tip;
+  } catch (e) {
+    el.textContent = "🔴 health unreachable";
+    el.className = "health-strip health-down";
+    el.title = String(e && e.message ? e.message : e);
+  }
+}
+
 /**
  * Green = hashing now (~10m HR).
  * Yellow = work on this unfinished block, but quiet lately.
@@ -1239,9 +1281,12 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
     if (el) el.textContent = "Failed to load: " + err.message;
   }
 
+  refreshHealthStrip().catch((e) => console.error("health", e));
+
   // Soft 30s refresh for the active dashboard view (paused when tab hidden).
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
+    refreshHealthStrip().catch((e) => console.error("health", e));
     const p = (location.pathname || "/").replace(/\/+$/, "") || "/";
     if (p === "/blocks") return;
     const addr = qs("a");

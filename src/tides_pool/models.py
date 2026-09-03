@@ -6,9 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class HealthResponse(BaseModel):
+    """Ops health for /health + status strip.
+
+    status: ok | degraded | down
+    """
+
     status: str = "ok"
     version: str
     network: str
+    checks: dict = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PoolStats(BaseModel):

@@ -92,6 +92,15 @@ class CoinbaserSplitCache:
         self._refresh_task: asyncio.Task | None = None
         self._bg_task: asyncio.Task | None = None
         self._refresh_count = 0
+        self._last_refresh_ms: float | None = None
+        self._last_refresh_error: str | None = None
+        # Coinbaser reply health (process lifetime + recent ring)
+        self.gateway_sessions = 0
+        self._reply_count = 0
+        self._last_outs: int | None = None
+        self._last_reply_ms: float | None = None
+        self._outs_ring: deque[int] = deque(maxlen=100)
+        self._latency_ring: deque[float] = deque(maxlen=100)
 
     def ttl(self) -> float:
         return float(getattr(self.settings, "coinbaser_cache_seconds", 15.0) or 15.0)
@@ -157,6 +166,8 @@ class CoinbaserSplitCache:
             )
             self._dirty = False
             self._refresh_count += 1
+            self._last_refresh_ms = (time.monotonic() - t0) * 1000.0
+            self._last_refresh_error = None
             log.info(
                 "coinbaser cache refresh #%s shares=%s cutoff=%s max_seq=%s finder=%s credit=%s in %.3fs",
                 self._refresh_count,
@@ -175,7 +186,8 @@ class CoinbaserSplitCache:
         async def _run() -> None:
             try:
                 await self.refresh(force=True)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                self._last_refresh_error = str(exc)[:200]
                 log.exception("coinbaser cache refresh failed")
 
         self._refresh_task = asyncio.create_task(_run())
@@ -212,6 +224,7 @@ class CoinbaserSplitCache:
         return outs
 
     async def build_outs(self, value: int) -> list[dict]:
+        t0 = time.monotonic()
         if self._cached is None:
             await self.refresh(force=True)
         elif not self.is_fresh():
@@ -219,9 +232,11 @@ class CoinbaserSplitCache:
         c = self._cached
         if c is None:
             # refresh failed — ops-only fallback
-            return [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
+            outs = [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
+            self.note_reply(n_outs=1, latency_ms=(time.monotonic() - t0) * 1000.0)
+            return outs
         shares = self._merged_shares(c)
-        return await asyncio.to_thread(
+        outs = await asyncio.to_thread(
             self._compute_outs_sync,
             shares,
             int(value),
@@ -229,6 +244,46 @@ class CoinbaserSplitCache:
             finder=c.finder,
             finder_credit=c.finder_credit,
         )
+        self.note_reply(
+            n_outs=len(outs),
+            latency_ms=(time.monotonic() - t0) * 1000.0,
+        )
+        return outs
+
+    def note_reply(self, *, n_outs: int, latency_ms: float) -> None:
+        self._reply_count += 1
+        self._last_outs = int(n_outs)
+        self._last_reply_ms = float(latency_ms)
+        self._outs_ring.append(int(n_outs))
+        self._latency_ring.append(float(latency_ms))
+
+    def health_snapshot(self) -> dict:
+        c = self._cached
+        age = None if c is None else max(0.0, time.monotonic() - c.computed_at)
+        lat = sorted(self._latency_ring)
+        p99 = lat[int(round((len(lat) - 1) * 0.99))] if lat else None
+        outs1 = sum(1 for n in self._outs_ring if n <= 1)
+        return {
+            "cache_fresh": self.is_fresh(),
+            "cache_age_s": None if age is None else round(age, 2),
+            "cache_ttl_s": self.ttl(),
+            "cache_shares": 0 if c is None else len(c.shares),
+            "cache_max_seq": None if c is None else c.max_seq,
+            "refresh_count": self._refresh_count,
+            "last_refresh_ms": None
+            if self._last_refresh_ms is None
+            else round(self._last_refresh_ms, 1),
+            "last_refresh_error": self._last_refresh_error,
+            "gateway_sessions": int(self.gateway_sessions),
+            "replies": self._reply_count,
+            "last_outs": self._last_outs,
+            "last_reply_ms": None
+            if self._last_reply_ms is None
+            else round(self._last_reply_ms, 1),
+            "outs1_recent": outs1,
+            "outs_recent_n": len(self._outs_ring),
+            "p99_reply_ms": None if p99 is None else round(p99, 1),
+        }
 
     async def run_background(self) -> None:
         # Prime once, then periodic refresh
@@ -1327,6 +1382,7 @@ async def handle_client(
     quarantine_guard: QuarantineGuard,
 ) -> None:
     peer = writer.get_extra_info("peername")
+    coinbaser_cache.gateway_sessions += 1
     sess = DatumPrimeSession(
         reader,
         writer,
@@ -1346,6 +1402,7 @@ async def handle_client(
     except Exception:
         log.exception("DATUM Prime session error from %s", peer)
     finally:
+        coinbaser_cache.gateway_sessions = max(0, coinbaser_cache.gateway_sessions - 1)
         try:
             writer.close()
             await writer.wait_closed()
@@ -1357,7 +1414,7 @@ async def start_datum_prime(
     settings: Settings,
     store: Store,
     keys_path: Path,
-) -> tuple[asyncio.AbstractServer, PoolKeys]:
+) -> tuple[asyncio.AbstractServer, PoolKeys, CoinbaserSplitCache]:
     keys = PoolKeys.load_or_create(keys_path)
     coinbaser_cache = CoinbaserSplitCache(store, settings)
     quarantine_guard = QuarantineGuard(settings)
@@ -1377,4 +1434,4 @@ async def start_datum_prime(
         coinbaser_cache.ttl(),
         int(getattr(settings, "quarantine_check_every_n", 10) or 10),
     )
-    return server, keys
+    return server, keys, coinbaser_cache

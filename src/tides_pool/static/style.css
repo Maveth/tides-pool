@@ -49,6 +49,46 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
   font-size: 0.85rem;
 }
+.health-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.health-strip:hover { text-decoration: none; filter: brightness(1.08); }
+.health-ok {
+  border-color: rgba(80, 180, 120, 0.45);
+  background: rgba(80, 180, 120, 0.12);
+  color: #7ddea8;
+}
+.health-degraded {
+  border-color: rgba(240, 180, 41, 0.5);
+  background: rgba(240, 180, 41, 0.14);
+  color: #ffc14d;
+}
+.health-down {
+  border-color: rgba(232, 93, 93, 0.55);
+  background: rgba(232, 93, 93, 0.16);
+  color: #ff8e8e;
+}
+.health-unknown {
+  color: var(--muted);
+}
+@media (max-width: 720px) {
+  .health-strip {
+    order: 3;
+    width: 100%;
+    justify-content: center;
+  }
+}
 .lookup {
   display: flex;
   gap: 0.5rem;
