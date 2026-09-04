@@ -296,13 +296,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260904noluck"',
+        'src="/static/app.js?v=20260904collapse"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260904noluck"',
+        'href="/static/style.css?v=20260904collapse"',
         html,
         count=1,
     )
@@ -364,6 +364,42 @@ async def address_page() -> HTMLResponse:
 async def blocks_page() -> HTMLResponse:
     # same SPA shell; client JS shows the full blocks list
     return await index()
+
+
+def _mask_ip(ip: str | None) -> str:
+    """Public health helper: keep last octet/hextet only (*.*.*.x / *:*:*:x)."""
+    s = (ip or "").strip()
+    if not s:
+        return ""
+    # strip :port if present on IPv4 host:port
+    if s.count(":") == 1 and "." in s:
+        s = s.split(":", 1)[0]
+    if "." in s and ":" not in s:
+        parts = s.split(".")
+        if len(parts) == 4:
+            return f"*.*.*.{parts[3]}"
+        return "*.*.*.*"
+    if ":" in s:
+        # IPv6 — keep last hextet
+        core = s.split("%", 1)[0]
+        if core.startswith("[") and "]" in core:
+            core = core[1 : core.index("]")]
+        parts = [p for p in core.split(":") if p != ""]
+        last = parts[-1] if parts else "*"
+        return f"*:*:*:{last}"
+    return "*"
+
+
+def _mask_gateway_uas(rows: list) -> list:
+    out: list = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        item = dict(r)
+        if "ip" in item:
+            item["ip"] = _mask_ip(str(item.get("ip") or ""))
+        out.append(item)
+    return out
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -497,7 +533,8 @@ async def health() -> HealthResponse:
         "distinct": int(cb.get("bad_payout_distinct") or 0),
         "top": cb.get("bad_payout_top") or [],
     }
-    checks["gateway_uas"] = cb.get("gateway_uas") or []
+    # Mask client IPs on the public health helper (keep last octet only).
+    checks["gateway_uas"] = _mask_gateway_uas(cb.get("gateway_uas") or [])
     checks["ua_handshakes_top"] = cb.get("ua_handshakes_top") or []
     checks["ua_reject27_top"] = cb.get("ua_reject27_top") or []
     checks["ua_bad_payout_top"] = cb.get("ua_bad_payout_top") or []
@@ -1305,9 +1342,13 @@ async def _coinbaser_payload() -> CoinbaserResponse:
 
     out_addrs = [str(o.get("address") or "") for o in raw if o.get("address")]
     nmap = await store.nicknames_for_addresses(out_addrs)
+    # Fee 0%: no in-coinbase finder bonus — don't surface tides+finder on the site.
+    hide_finder_kind = int(getattr(settings, "fee_bps", 0) or 0) <= 0
     outputs: list[CoinbaseOutput] = []
     for o in raw:
         kind = o.get("kind") or "tides"
+        if hide_finder_kind and kind == "tides+finder":
+            kind = "tides"
         addr = str(o.get("address") or "")
         if kind == "ops":
             name = "ops"
