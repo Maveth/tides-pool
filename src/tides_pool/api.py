@@ -296,13 +296,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260904kind"',
+        'src="/static/app.js?v=20260904luck"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260904kind"',
+        'href="/static/style.css?v=20260904luck"',
         html,
         count=1,
     )
@@ -560,6 +560,20 @@ async def stats() -> PoolStats:
     est_block: float | None = None
     if pool_hs > 0 and diff_f > 0:
         est_block = (diff_f * _DIFF1_HASHES) / pool_hs
+    # Window luck: finds after cutoff × network_diff / window_work.
+    # Expected blocks ≈ work/diff (Diff1 work units). 100% = expected.
+    confirmed_for_luck = await store.list_confirmed_blocks(limit=settings.window_blocks)
+    if cutoff is None:
+        luck_finds = len(confirmed_for_luck)
+    else:
+        luck_finds = sum(
+            1
+            for b in confirmed_for_luck
+            if b.share_head_seq is not None and int(b.share_head_seq) > int(cutoff)
+        )
+    window_luck: float | None = None
+    if filled > 0 and diff > 0 and luck_finds > 0:
+        window_luck = round(100.0 * luck_finds * float(diff) / float(filled), 2)
     return PoolStats(
         share_log_work=await store.total_work(),
         share_count=await store.share_count(),
@@ -584,6 +598,8 @@ async def stats() -> PoolStats:
         window_mode="pool_finds",
         window_confirmed_finds=n_conf,
         window_cutoff_seq=cutoff,
+        window_luck_pct=window_luck,
+        window_luck_finds=luck_finds,
         block_confirmations=settings.block_confirmations,
         network=settings.network,
         pool_name=f"{settings.coinbase_tag_primary}/{settings.coinbase_tag_secondary}",
@@ -604,7 +620,7 @@ async def stats() -> PoolStats:
 
 @app.get("/api/contributors", response_model=list[Contributor])
 async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor]:
-    _shares, window, _cutoff, _n = await _payout_window()
+    _shares, window, cutoff, _n = await _payout_window()
     hr_window = 600
     recent = await store.list_share_rows_since(hr_window, limit=50_000)
     # "This block" = shares after the latest confirmed find's share_head_seq.
@@ -629,15 +645,38 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
     addrs = [r["address"] for r in rows]
     qmap = await store.list_quarantines(addrs)
     nmap = await store.nicknames_for_addresses(addrs)
+    # Finds strictly inside the payout window (share_head after cutoff).
+    if cutoff is None:
+        in_window_finds = list(confirmed)
+    else:
+        in_window_finds = [
+            b
+            for b in confirmed
+            if b.share_head_seq is not None and int(b.share_head_seq) > int(cutoff)
+        ]
+    finds_by_addr: dict[str, int] = {}
+    for b in in_window_finds:
+        fa = (b.finder_address or "").strip()
+        if fa:
+            finds_by_addr[fa] = finds_by_addr.get(fa, 0) + 1
+    diff = await _difficulty()
     out: list[Contributor] = []
     for r in rows:
         q = qmap.get(r["address"])
+        addr = r["address"]
+        n_finds = int(finds_by_addr.get(addr, 0))
+        work = int(r.get("work") or 0)
+        luck: float | None = None
+        if n_finds > 0 and work > 0 and diff > 0:
+            luck = round(100.0 * n_finds * float(diff) / float(work), 2)
         out.append(
             Contributor(
                 **r,
                 quarantined=bool(q),
                 quarantine_reason=(q or {}).get("reason") if q else None,
-                nickname=nmap.get(r["address"]),
+                nickname=nmap.get(addr),
+                luck_pct=luck,
+                luck_finds=n_finds,
             )
         )
     return out

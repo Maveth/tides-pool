@@ -42,6 +42,10 @@ class PoolStats(BaseModel):
     window_mode: str = "pool_finds"  # last N confirmed pool finds
     window_confirmed_finds: int = 0
     window_cutoff_seq: int | None = None
+    # Window luck% = 100 * finds_in_window * network_diff / window_work
+    # (expected blocks ≈ work/diff when work is Diff1-sum). 100 = on pace.
+    window_luck_pct: float | None = None
+    window_luck_finds: int = 0
     block_confirmations: int = 2
     network: str = "testnet4"
     pool_name: str = "TIDES lab"
@@ -129,6 +133,10 @@ class Contributor(BaseModel):
     quarantined: bool = False
     quarantine_reason: str | None = None
     nickname: str | None = None  # last coinbase secondary tag seen for this address
+    # Finder luck in the payout window: 100 * finds_by_addr * net_diff / work.
+    # None when no finds by this address in-window (or no work).
+    luck_pct: float | None = None
+    luck_finds: int = 0
 
 
 class BlockOut(BaseModel):
