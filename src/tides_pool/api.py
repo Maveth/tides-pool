@@ -223,10 +223,14 @@ async def _payout_window():
     """Shares in the live payout window: (N-1) confirmed finds + current.
 
     Cutoff is the share head of the Nth-last confirmed find; orphans do not count.
+    Use uncapped list_shares_after_cutoff — same source Prime coinbaser uses.
+    (list_shares_newest(50k) drifted vs coinbaser once the window exceeded 50k rows.)
     """
-    shares = await store.list_shares_newest(limit=50_000)
     cutoff = await store.payout_window_cutoff_seq(settings.window_blocks)
-    window = window_since_seq(shares, cutoff)
+    window = await store.list_shares_after_cutoff(cutoff)
+    # Newest-first for callers that expect that order (split_reward does not require it
+    # when cutoff_seq is applied separately, but keep consistent with prior API).
+    shares = sorted(window, key=lambda s: int(s.seq), reverse=True)
     confirmed = await store.list_confirmed_blocks(limit=settings.window_blocks)
     return shares, window, cutoff, len(confirmed)
 
@@ -1139,8 +1143,19 @@ async def user_stats(address: str) -> UserStats:
     work = sum(s.work for s in window if s.address == address)
     total = sum(s.work for s in window) or 1
     pct = 100.0 * work / total
-    miner_budget = (await _reward_estimate()) * miner_reward_bps(settings) // 10_000
-    est = miner_budget * work // total
+    # Match main-page "If we find a block now" exactly (Prime coinbaser outs),
+    # not a separate proportional estimate on a possibly different window/reward.
+    try:
+        cb = await _coinbaser_payload()
+        est = sum(
+            int(o.sats or 0)
+            for o in (cb.outputs or [])
+            if (o.address or "") == address
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("user est_next from coinbaser failed: %s", exc)
+        miner_budget = (await _reward_estimate()) * miner_reward_bps(settings) // 10_000
+        est = miner_budget * work // total
     finder, credit = await store.pending_finder_credit()
     pending = credit if finder == address else 0
     recent = await store.list_shares_for_address(address, limit=100)
