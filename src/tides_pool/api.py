@@ -240,13 +240,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260903b"',
+        'src="/static/app.js?v=20260903i"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260903b"',
+        'href="/static/style.css?v=20260903i"',
         html,
         count=1,
     )
@@ -403,6 +403,32 @@ async def health() -> HealthResponse:
         if status != "down":
             status = "degraded"
         warnings.append(f"coinbaser_p99_ms:{p99}")
+
+    # pool_pass_full_users misuse: miner username not a bc1… (reject 14)
+    bad_1h = int(cb.get("bad_payout_rejects_1h") or 0)
+    bad_total = int(cb.get("bad_payout_rejects_total") or 0)
+    checks["bad_payout"] = {
+        "rejects_total": bad_total,
+        "rejects_1h": bad_1h,
+        "distinct": int(cb.get("bad_payout_distinct") or 0),
+        "top": cb.get("bad_payout_top") or [],
+    }
+    checks["gateway_uas"] = cb.get("gateway_uas") or []
+    checks["ua_handshakes_top"] = cb.get("ua_handshakes_top") or []
+    checks["ua_reject27_top"] = cb.get("ua_reject27_top") or []
+    checks["ua_bad_payout_top"] = cb.get("ua_bad_payout_top") or []
+    if bad_1h > 0:
+        top = cb.get("bad_payout_top") or []
+        sample = ",".join(
+            str(x.get("user") or "")[:24] for x in top[:3] if isinstance(x, dict)
+        )
+        warnings.append(f"bad_payout_username_1h:{bad_1h}:{sample}")
+    r27_ua = cb.get("ua_reject27_top") or []
+    if r27_ua:
+        sample = ",".join(
+            f"{x.get('ua','')[:28]}:{x.get('n')}" for x in r27_ua[:3] if isinstance(x, dict)
+        )
+        warnings.append(f"reject27_by_ua:{sample}")
 
     if checks["manual_payouts_pending"]:
         warnings.append(f"manual_payouts_pending:{checks['manual_payouts_pending']}")
@@ -1012,26 +1038,55 @@ async def _worker_name_for_address(address: str) -> str:
 
 
 async def _coinbaser_payload() -> CoinbaserResponse:
-    shares, _window, cutoff, _n = await _payout_window()
-    tides = split_reward(
-        shares,
-        reward_sats=await _reward_estimate(),
-        block_difficulty=await _difficulty(),
-        window_blocks=settings.window_blocks,
-        miner_bps=miner_reward_bps(settings),
-        min_output_sats=settings.min_output_sats,
-        pool_ops_address=settings.pool_ops_address,
-        cutoff_seq=cutoff,
-        window_mode="pool_finds",
-    )
-    finder, credit = await store.pending_finder_credit()
-    raw = coinbase_suggestion(
-        tides,
-        pool_ops_address=settings.pool_ops_address or "ops-unconfigured",
-        finder_address=finder or "",
-        finder_credit_sats=credit,
-        min_output_sats=settings.min_output_sats,
-    )
+    """Same split Gateways get from Prime — prefer CoinbaserSplitCache.
+
+    Previously the website recalculated via _payout_window + reward_estimate
+    while DATUM Gateways used coinbaser_cache.build_outs(template_value).
+    That made address order/amounts drift. Now the site uses the Prime cache
+    (and the last template value when available).
+    """
+    reward_est = await _reward_estimate()
+    raw: list[dict] = []
+    value = reward_est
+    window_work = 0
+    head: int | None = None
+
+    if _coinbaser_cache is not None:
+        last_v = _coinbaser_cache.last_prime_value()
+        if last_v and int(last_v) > 0:
+            value = int(last_v)
+        # Rebuild from the same cached window Prime uses (rescaled to value).
+        raw = await _coinbaser_cache.build_outs(int(value))
+        window_work = int(_coinbaser_cache.window_work())
+        c = getattr(_coinbaser_cache, "_cached", None)
+        if c is not None and getattr(c, "max_seq", None) is not None:
+            head = int(c.max_seq)
+    else:
+        # Fallback if Prime cache is unavailable (should be rare).
+        shares, _window, cutoff, _n = await _payout_window()
+        tides = split_reward(
+            shares,
+            reward_sats=reward_est,
+            block_difficulty=await _difficulty(),
+            window_blocks=settings.window_blocks,
+            miner_bps=miner_reward_bps(settings),
+            min_output_sats=settings.min_output_sats,
+            pool_ops_address=settings.pool_ops_address,
+            cutoff_seq=cutoff,
+            window_mode="pool_finds",
+        )
+        finder, credit = await store.pending_finder_credit()
+        raw = coinbase_suggestion(
+            tides,
+            pool_ops_address=settings.pool_ops_address or "ops-unconfigured",
+            finder_address=finder or "",
+            finder_credit_sats=credit,
+            min_output_sats=settings.min_output_sats,
+        )
+        window_work = int(tides.window_work)
+        head = shares[0].seq if shares else None
+        value = reward_est
+
     out_addrs = [str(o.get("address") or "") for o in raw if o.get("address")]
     nmap = await store.nicknames_for_addresses(out_addrs)
     outputs: list[CoinbaseOutput] = []
@@ -1051,11 +1106,10 @@ async def _coinbaser_payload() -> CoinbaserResponse:
                 nickname=nmap.get(addr),
             )
         )
-    head = shares[0].seq if shares else None
     return CoinbaserResponse(
-        reward_sats_estimate=await _reward_estimate(),
+        reward_sats_estimate=int(value),
         outputs=outputs,
-        window_work=tides.window_work,
+        window_work=window_work,
         share_log_head_seq=head,
     )
 
@@ -1172,7 +1226,7 @@ async def info(request: Request) -> dict:
             "pool_port": settings.datum_prime_port,
             "pool_pubkey": _pool_pubkey_hex,
             "pool_pubkey_optional_if_autofetch": True,
-            "note": "REQUIRED: run your own Knots RC4 Blake node and point DATUM bitcoind RPC at it — without that, DATUM stays not ready even if Prime connects. Then point DATUM pool_host here (miners → your DATUM Stratum, not :28916). Empty pool_pubkey OK on MaVeTh Blake builds. Set mining.pool_address to your mainnet bc1…/1… payout.",
+            "note": "REQUIRED: run your own Knots Blake node and point DATUM bitcoind RPC at it — without that, DATUM stays not ready even if Prime connects. Prefer Leo StartOS pow_0.4.1_18+ / Umbrel Bitcoin-store DATUM (blake2b); experimental MaVeTh pow_0.4.1_20 also works. Then point DATUM pool_host here (miners → your DATUM Stratum, not :28916). Paste pool_pubkey if your build does not auto-fetch. Set mining.pool_address to your mainnet bc1…/1… payout.",
         },
     }
 

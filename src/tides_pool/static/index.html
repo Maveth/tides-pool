@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RIPTIDE · Mainnet Blake2b RC4</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260903b" />
+  <title>RIPTIDE · Mainnet Blake2b</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260903i" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
       <a href="/">RIPTIDE</a>
-      <span class="tag">mainnet · Blake2b · BIP110 RC4 · DATUM-only</span>
+      <span class="tag">mainnet · Blake2b · DATUM-only</span>
     </div>
     <a id="healthStrip" class="health-strip health-unknown" href="/health" title="Pool / Prime health">…</a>
     <form id="lookup" class="lookup" action="/address" method="get">
@@ -22,58 +22,84 @@
   <main>
     <section id="poolView">
       <h1>RIPTIDE dashboard</h1>
-      <p class="muted">Blake2b · BIP110 RC4 · DATUM-only. Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
+      <p class="muted">Blake2b · DATUM-only. Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
 
       <details class="connect-panel connect-panel-top" id="connectPanel">
         <summary>
           <span class="connect-title">How to connect</span>
-          <span class="connect-hint muted">Gateway requirements, Start9, checklist, warnings</span>
+          <span class="connect-hint muted">Official Blake DATUM (Leo), experimental CONVOY, checklist</span>
         </summary>
         <div class="connect-body">
           <div class="alert box" id="reopenNote" role="status">
             <strong>Coinbaser enforcement is on.</strong>
             Multi-out windows reject type-0 / <code>coinbase_id=0</code> shares (reject 27 — no credit).
-            Use a patched Blake DATUM Gateway
-            (<a href="https://github.com/Maveth/datum_gateway-fly/tree/test/console-collapse-pr14-pr17" target="_blank" rel="noopener">Fly tip <code>121edd0</code></a>
-            /
-            <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_20" target="_blank" rel="noopener">StartOS <code>pow_0.4.1_20</code></a>).
+            Use a <strong>pool-compatible Blake2b DATUM</strong> (Leo <code>pow_0.4.1_18+</code>, experimental MaVeTh, or experimental CONVOY below).
           </div>
 
           <div class="join box" id="joinBox">
             <h2>DATUM → this pool</h2>
             <p class="muted">You run <strong>your own</strong> Knots + DATUM. Miners talk to <em>your</em> Gateway. Your Gateway talks to this pool.</p>
             <pre id="joinPre">Loading…</pre>
-            <p class="muted">Paste the Prime <code>pool_pubkey</code> (128 hex) — blank is <strong>not</strong> auto-fetched on the recommended Fly build.</p>
+            <p class="muted">Paste the Prime <code>pool_pubkey</code> (128 hex) into DATUM if your build does not auto-fetch it.</p>
           </div>
 
           <div class="warn box" id="joinDatumWarn">
-            <strong>Required Gateway:</strong>
-            <a href="https://github.com/Maveth/datum_gateway-fly/tree/test/console-collapse-pr14-pr17" target="_blank" rel="noopener">Fly tip <code>121edd0</code></a>
-            (Jason #17 multi-out). Stock Blake type-0 builds get reject 27 and can be quarantined.
-            Keep a solo fallback handy.
+            <strong>Official packages (Leo / Retropex) — preferred:</strong>
+            <ul class="connect-stores">
+              <li><strong>StartOS:</strong> registry
+                <a href="https://start9.mempool.guide/" target="_blank" rel="noopener">start9.mempool.guide</a>
+                · or sideload
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/tag/pow_0.4.1_18" target="_blank" rel="noopener"><code>pow_0.4.1_18</code></a>
+                (pool-compat fix; <strong>not</strong> <code>_17</code>).</li>
+              <li><strong>Umbrel:</strong> community store
+                <a href="https://github.com/Retropex/Bitcoin-store" target="_blank" rel="noopener">github.com/Retropex/Bitcoin-store</a>
+                → <strong>DATUM (blake2b)</strong> (current store build).</li>
+            </ul>
+            <strong>Experimental (working, MaVeTh):</strong>
+            <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_20" target="_blank" rel="noopener">StartOS <code>pow_0.4.1_20</code></a>
+            (Fly tip multi-out) — sideload if you need the older known-good package.
+            Pre-<code>_18</code> Leo / type-0-only Gateways still get reject 27 here.
+            <br /><br />
+            <strong>Experimental support for CONVOY DATUM (ABW-disable mode):</strong>
+            <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
+            tip (~<code>b9ea7dc</code>+). This pool’s Prime dual-speaks configure:
+            CONVOY UAs get <strong>v3 + ABW disabled</strong>; Leo / MaVeTh / other packages stay on classic <strong>v1</strong> (unchanged).
+            Still experimental — prefer Leo <code>_18+</code> for production miners; watch for type-0 / empty-tip coinbase behavior on Blake.
           </div>
 
-          <div class="warn box" id="joinStart9Warn">
-            <strong>Start9:</strong> sideload
-            <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_20" target="_blank" rel="noopener">MaVeTh <code>pow_0.4.1_20</code></a>
-            — <code>datum_aarch64.s9pk</code> (Pi/ARM) or <code>datum_x86_64.s9pk</code> (Intel/AMD).
-            Unofficial sideload; verify SHA256 on the release page.
+          <div class="warn box" id="joinFullPassWarn">
+            <strong>Do NOT enable Pool Pass Full Users</strong> on this pool.
+            Incorrect setup rejects your shares (<code>bad payout address</code> / reject 14).
+            Use <strong>Send Miner Usernames To Pool → Send as worker names</strong> instead,
+            and put only a worker name in the miner (e.g. <code>rig1</code>).
+            Your Gateway <code>mining.pool_address</code> is then the payout address.
+            <figure class="connect-shot">
+              <img
+                src="/static/pool_pass_full.png?v=20260903i"
+                alt="DATUM config: leave Pool Pass Full Users unchecked; use Send as worker names"
+                width="640"
+                height="360"
+                loading="lazy"
+              />
+              <figcaption class="muted">Leave <em>Pool Pass Full Users</em> off. Wrong combo = rejected shares.</figcaption>
+            </figure>
           </div>
 
           <div class="warn box">
-            <strong>Your own Knots node is required</strong> (BIP110 RC4 / Blake2b). Point DATUM
+            <strong>Your own Knots node is required</strong> (Blake2b mainnet). Point DATUM
             <code>bitcoind</code> RPC at it. Experimental pool — no back-pay if we go down.
           </div>
 
           <div class="rules">
             <h3>Checklist</h3>
             <ul>
-              <li><strong>Knots:</strong> mainnet · Blake2b · BIP110 RC4 · synced · RPC for DATUM.</li>
-              <li><strong>Start9 DATUM:</strong> sideload <code>pow_0.4.1_20</code> (see above).</li>
+              <li><strong>Knots:</strong> mainnet · Blake2b · synced · RPC for DATUM.</li>
+              <li><strong>DATUM:</strong> Leo <code>pow_0.4.1_18+</code> (or experimental MaVeTh <code>_20</code>) — see above.</li>
               <li><strong>DATUM → pool:</strong> <code>pool_host=tides.maveth.ca</code> <code>pool_port=28916</code> (LAN: NAS IP).</li>
               <li><strong>Payout:</strong> <code>mining.pool_address</code> = your <code>bc1…</code> / <code>1…</code>.</li>
+              <li><strong>Usernames:</strong> <strong>Pool Pass Full Users = OFF</strong> · miners = worker name only (e.g. <code>rig1</code>).</li>
               <li><strong>Tag:</strong> <code>coinbase_tag_secondary</code> = your name; primary is <code>TIDES</code>.</li>
-              <li><strong>Miners:</strong> worker name only (e.g. <code>rig1</code>) → your Gateway stratum — never port <code>28916</code>.</li>
+              <li><strong>Miners:</strong> point ASICs at <em>your</em> Gateway stratum — never port <code>28916</code>.</li>
               <li><strong>Fallback:</strong> keep solo / another pool configured.</li>
             </ul>
           </div>
@@ -97,7 +123,7 @@
 
       <div class="box dashboard-panel" id="coinbaserBox">
         <h2>If we find a block now</h2>
-        <p class="muted">Live coinbaser from Prime — your Gateway must mine these outs. Fee / finder / window details are in the footnote below.</p>
+        <p class="muted">Same payout split Prime sends Gateways (cached window, live template value). Fee / finder / window details are in the footnote below.</p>
         <p class="muted" id="coinbaserNote"></p>
         <div class="table-wrap">
           <table>
@@ -253,6 +279,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260903b" defer></script>
+  <script src="/static/app.js?v=20260903i" defer></script>
 </body>
 </html>

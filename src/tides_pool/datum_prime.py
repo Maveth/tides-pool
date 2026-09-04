@@ -35,6 +35,24 @@ AcceptShareCb = Callable[[str, int, str | None], Awaitable[None]]
 # Good attempt "why" values that count toward rehab / probation streaks.
 _GOOD_ATTEMPT_WHY = frozenset({"ok", "rehab-good", "probation-good"})
 
+# CONVOY / Luke tip Gateways need configure v3 + ABW disabled.
+# Everyone else (Leo / InnerHat / MaVeTh packages) stays on classic v1.
+# Override markers: TIDES_CONFIGURE_V3_UA_SUBSTR=comma,separated,markers
+_DEFAULT_V3_UA_MARKERS = ("b9ea7dc", "convoy")
+
+
+def _ua_wants_configure_v3(ua: str) -> bool:
+    """True → configure v3+ABW-off; False → classic v1 (unchanged for normal users)."""
+    raw = (os.environ.get("TIDES_CONFIGURE_V3_UA_SUBSTR") or "").strip()
+    markers = (
+        tuple(m.strip().lower() for m in raw.split(",") if m.strip())
+        if raw
+        else _DEFAULT_V3_UA_MARKERS
+    )
+    u = (ua or "").lower()
+    return any(m in u for m in markers)
+
+
 # DATUM reject reason codes (protocol)
 DATUM_REJECT_BAD_COINBASE_ID = 11
 DATUM_REJECT_BAD_USERNAME = 14
@@ -99,8 +117,20 @@ class CoinbaserSplitCache:
         self._reply_count = 0
         self._last_outs: int | None = None
         self._last_reply_ms: float | None = None
+        self._last_value: int | None = None
+        self._last_outs_list: list[dict] = []
         self._outs_ring: deque[int] = deque(maxlen=100)
         self._latency_ring: deque[float] = deque(maxlen=100)
+        # pool_pass_full_users misuse: miner username is not a payout address
+        self._bad_payout_total = 0
+        self._bad_payout_ring: deque[tuple[float, str]] = deque(maxlen=200)
+        self._bad_payout_names: dict[str, int] = defaultdict(int)
+        # Live Gateway sessions: peer_key -> {ua, ip, connected_at}
+        self._gateway_sessions: dict[str, dict] = {}
+        # UA tallies (process lifetime)
+        self._ua_handshakes: dict[str, int] = defaultdict(int)
+        self._ua_r27: dict[str, int] = defaultdict(int)
+        self._ua_bad_payout: dict[str, int] = defaultdict(int)
 
     def ttl(self) -> float:
         return float(getattr(self.settings, "coinbaser_cache_seconds", 15.0) or 15.0)
@@ -233,7 +263,12 @@ class CoinbaserSplitCache:
         if c is None:
             # refresh failed — ops-only fallback
             outs = [{"address": self.settings.pool_ops_address, "sats": value, "kind": "ops"}]
-            self.note_reply(n_outs=1, latency_ms=(time.monotonic() - t0) * 1000.0)
+            self.note_reply(
+                n_outs=1,
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+                value=int(value),
+                outs_list=outs,
+            )
             return outs
         shares = self._merged_shares(c)
         outs = await asyncio.to_thread(
@@ -247,15 +282,60 @@ class CoinbaserSplitCache:
         self.note_reply(
             n_outs=len(outs),
             latency_ms=(time.monotonic() - t0) * 1000.0,
+            value=int(value),
+            outs_list=outs,
         )
         return outs
 
-    def note_reply(self, *, n_outs: int, latency_ms: float) -> None:
+    def window_work(self) -> int:
+        c = self._cached
+        if c is None:
+            return 0
+        return int(sum(int(s.work or 0) for s in self._merged_shares(c)))
+
+    def last_prime_value(self) -> int | None:
+        return self._last_value
+
+    def last_outs_snapshot(self) -> list[dict]:
+        """Copy of the last outs list sent/built for Prime (same split the Gateways got)."""
+        return [dict(o) for o in self._last_outs_list]
+
+    def note_reply(
+        self,
+        *,
+        n_outs: int,
+        latency_ms: float,
+        value: int | None = None,
+        outs_list: list[dict] | None = None,
+    ) -> None:
         self._reply_count += 1
         self._last_outs = int(n_outs)
         self._last_reply_ms = float(latency_ms)
         self._outs_ring.append(int(n_outs))
         self._latency_ring.append(float(latency_ms))
+        if value is not None and int(value) > 0:
+            self._last_value = int(value)
+        if outs_list is not None:
+            self._last_outs_list = [dict(o) for o in outs_list]
+
+    def note_bad_payout_username(self, username: str) -> None:
+        """Share username was not a Bitcoin address — classic pool_pass_full_users misuse."""
+        u = (username or "").strip()[:120] or "(empty)"
+        now = time.time()
+        self._bad_payout_total += 1
+        self._bad_payout_ring.append((now, u))
+        self._bad_payout_names[u] += 1
+        # Throttle: one INFO per distinct name every ~60s would need more state;
+        # WARNING on the reject path already logs each share — keep a compact summary.
+        if self._bad_payout_total == 1 or self._bad_payout_total % 50 == 0:
+            top = sorted(self._bad_payout_names.items(), key=lambda kv: -kv[1])[:5]
+            log.warning(
+                "bad_payout_username tally=%s distinct=%s top=%s "
+                "(likely Pool Pass Full Users + miner username without bc1…)",
+                self._bad_payout_total,
+                len(self._bad_payout_names),
+                top,
+            )
 
     def health_snapshot(self) -> dict:
         c = self._cached
@@ -263,6 +343,9 @@ class CoinbaserSplitCache:
         lat = sorted(self._latency_ring)
         p99 = lat[int(round((len(lat) - 1) * 0.99))] if lat else None
         outs1 = sum(1 for n in self._outs_ring if n <= 1)
+        now = time.time()
+        recent_1h = [(t, u) for t, u in self._bad_payout_ring if now - t <= 3600]
+        top = sorted(self._bad_payout_names.items(), key=lambda kv: -kv[1])[:8]
         return {
             "cache_fresh": self.is_fresh(),
             "cache_age_s": None if age is None else round(age, 2),
@@ -277,13 +360,81 @@ class CoinbaserSplitCache:
             "gateway_sessions": int(self.gateway_sessions),
             "replies": self._reply_count,
             "last_outs": self._last_outs,
+            "last_value": self._last_value,
             "last_reply_ms": None
             if self._last_reply_ms is None
             else round(self._last_reply_ms, 1),
             "outs1_recent": outs1,
             "outs_recent_n": len(self._outs_ring),
             "p99_reply_ms": None if p99 is None else round(p99, 1),
+            "bad_payout_rejects_total": int(self._bad_payout_total),
+            "bad_payout_rejects_1h": len(recent_1h),
+            "bad_payout_distinct": len(self._bad_payout_names),
+            "bad_payout_top": [{"user": u, "n": n} for u, n in top],
+            "gateway_uas": self._gateway_ua_snapshot(),
+            "ua_handshakes_top": [
+                {"ua": u, "n": n}
+                for u, n in sorted(self._ua_handshakes.items(), key=lambda kv: -kv[1])[:12]
+            ],
+            "ua_reject27_top": [
+                {"ua": u, "n": n}
+                for u, n in sorted(self._ua_r27.items(), key=lambda kv: -kv[1])[:8]
+            ],
+            "ua_bad_payout_top": [
+                {"ua": u, "n": n}
+                for u, n in sorted(self._ua_bad_payout.items(), key=lambda kv: -kv[1])[:8]
+            ],
         }
+
+    @staticmethod
+    def _normalize_ua(raw: bytes | str | None) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, (bytes, bytearray)):
+            s = bytes(raw).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+        else:
+            s = str(raw).split("\x00", 1)[0]
+        return s.strip()[:96]
+
+    def note_gateway_session(self, peer_key: str, *, ip: str, ua: str) -> None:
+        ua_n = self._normalize_ua(ua) or "(empty)"
+        self._gateway_sessions[peer_key] = {
+            "ip": ip,
+            "ua": ua_n,
+            "connected_at": time.time(),
+        }
+        self._ua_handshakes[ua_n] += 1
+
+    def drop_gateway_session(self, peer_key: str) -> None:
+        self._gateway_sessions.pop(peer_key, None)
+
+    def gateway_ua_for_peer(self, peer_key: str) -> str:
+        row = self._gateway_sessions.get(peer_key) or {}
+        return str(row.get("ua") or "")
+
+    def note_reject_ua(self, ua: str, *, kind: str) -> None:
+        ua_n = self._normalize_ua(ua) or "(unknown)"
+        if kind == "r27":
+            self._ua_r27[ua_n] += 1
+        elif kind == "bad_payout":
+            self._ua_bad_payout[ua_n] += 1
+
+    def _gateway_ua_snapshot(self) -> list[dict]:
+        rows = sorted(
+            self._gateway_sessions.values(),
+            key=lambda r: float(r.get("connected_at") or 0),
+            reverse=True,
+        )
+        out = []
+        for r in rows[:24]:
+            out.append(
+                {
+                    "ip": r.get("ip"),
+                    "ua": r.get("ua"),
+                    "age_s": round(max(0.0, time.time() - float(r.get("connected_at") or 0)), 1),
+                }
+            )
+        return out
 
     async def run_background(self) -> None:
         # Prime once, then periodic refresh
@@ -537,6 +688,15 @@ class DatumPrimeSession:
         self.coinbaser_id = 1
         # coinbaser_id → {"n_value_outs": int} for recent assignments (lag-tolerant)
         self.recent_coinbasers: dict[int, dict] = {}
+        peer = writer.get_extra_info("peername")
+        if isinstance(peer, tuple) and peer:
+            self.peer_ip = str(peer[0])
+            self.peer_port = int(peer[1]) if len(peer) > 1 else 0
+        else:
+            self.peer_ip = str(peer or "")
+            self.peer_port = 0
+        self.peer_key = f"{self.peer_ip}:{self.peer_port}"
+        self.client_ua = ""
 
     def _remember_coinbaser(self, cid: int, n_value_outs: int) -> None:
         self.recent_coinbasers[cid & 0xFF] = {"n_value_outs": int(n_value_outs)}
@@ -730,24 +890,69 @@ class DatumPrimeSession:
             sign_sk=self.pool_keys.sign_sk,
             hdr_key=self.send_hdr_key,
         )
-        log.info("handshake OK nk=%08x client_ua=%r", nk, msg[128:fe])
+        ua_raw = msg[128:fe]
+        self.client_ua = CoinbaserSplitCache._normalize_ua(ua_raw)
+        try:
+            self.coinbaser_cache.note_gateway_session(
+                self.peer_key, ip=self.peer_ip, ua=self.client_ua
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        log.info(
+            "handshake OK nk=%08x peer=%s client_ua=%r",
+            nk,
+            self.peer_key,
+            self.client_ua or ua_raw,
+        )
 
-        # 0x99 configure — pool ops / fee script
+        # 0x99 configure — dual-speak:
+        #   CONVOY (UA markers) → v3 + ABW disabled so Gateway becomes ready
+        #   everyone else → classic v1 (Leo / InnerHat / MaVeTh unchanged)
         script = script_for_address(self.settings.pool_ops_address, self.settings.pool_ops_address)
         tag = self.settings.coinbase_tag_primary.encode()[:32]
+        prime_id = 0x71DE5001
+        vardiff = max(int(self.settings.min_share_difficulty), 4)
+        use_v3 = _ua_wants_configure_v3(self.client_ua or "")
         cfg = bytearray()
         cfg.append(0x99)
-        cfg.append(1)  # version
-        cfg.append(len(script))
-        cfg.extend(script)
-        cfg.extend(struct.pack("<I", 0x71DE5001))  # prime_id
-        cfg.append(len(tag))
-        cfg.extend(tag)
-        cfg.extend(struct.pack("<Q", max(int(self.settings.min_share_difficulty), 4)))
-        cfg.extend(b"\x00\xfe")
+        if use_v3:
+            if len(script) > 83:
+                raise RuntimeError(
+                    f"ops scriptPubKey too long for CONVOY cap ({len(script)} > 83)"
+                )
+            resume = bytearray(40)
+            struct.pack_into("<Q", resume, 0, prime_id)
+            resume[8:] = os.urandom(32)
+            cfg.append(3)
+            cfg.append(len(script))
+            cfg.extend(script)
+            cfg.extend(struct.pack("<Q", prime_id))
+            cfg.extend(resume)
+            cfg.append(len(tag))
+            cfg.extend(tag)
+            cfg.extend(struct.pack("<Q", vardiff))
+            cfg.append(0x01)  # DATUM_CONFIG_FLAG_ABW_DISABLED
+            cfg.append(0xFE)
+            ver_label = "v3-abw-off"
+        else:
+            cfg.append(1)
+            cfg.append(len(script))
+            cfg.extend(script)
+            cfg.extend(struct.pack("<I", prime_id & 0xFFFFFFFF))
+            cfg.append(len(tag))
+            cfg.extend(tag)
+            cfg.extend(struct.pack("<Q", vardiff))
+            cfg.extend(b"\x00\xfe")
+            ver_label = "v1"
         await self.send_channel(bytes(cfg), signed=True)
         self.configured = True
-        log.info("sent 0x99 configure tag=%s vardiff_min=%s", tag.decode(), max(int(self.settings.min_share_difficulty), 4))
+        log.info(
+            "sent 0x99 configure %s tag=%s vardiff_min=%s ua=%r",
+            ver_label,
+            tag.decode(),
+            vardiff,
+            self.client_ua,
+        )
 
     async def handle_channel(self, plaintext: bytes) -> None:
         if not plaintext:
@@ -1011,18 +1216,28 @@ class DatumPrimeSession:
 
         def _reject(reason: int, why: str) -> None:
             log.warning(
-                "share REJECT %s user=%r coinbase_id=%s flags=%02x nonce=%08x block=%s",
+                "share REJECT %s user=%r coinbase_id=%s flags=%02x nonce=%08x block=%s peer=%s ua=%r",
                 why,
                 username,
                 coinbase_id,
                 flags,
                 nonce,
                 is_block,
+                self.peer_key,
+                self.client_ua or "(unknown)",
             )
 
         # DATUM/Ocean convention: stratum username must be a payout address.
+        # With Gateway "Pool Pass Full Users" (override address), a bare worker
+        # name like "rig1" lands here and cannot be remapped — we never see
+        # mining.pool_address on the share wire.
         if not is_valid_payout_address(address):
             _reject(DATUM_REJECT_BAD_USERNAME, "bad payout address")
+            try:
+                self.coinbaser_cache.note_bad_payout_username(username)
+                self.coinbaser_cache.note_reject_ua(self.client_ua, kind="bad_payout")
+            except Exception:  # noqa: BLE001
+                pass
             resp = bytearray()
             resp.append(0x8F)
             resp.append(DATUM_POW_REJECTED)
@@ -1037,6 +1252,10 @@ class DatumPrimeSession:
         # Blake Gateways that mine coinbase[0] send coinbase_id=0 → zero shares until fixed.
         if self._assigned_multi_out() and (subsidy_only or coinbase_id == 0):
             _reject(DATUM_REJECT_BAD_COINBASE_OUTPUTS, "coinbase not multi-out")
+            try:
+                self.coinbaser_cache.note_reject_ua(self.client_ua, kind="r27")
+            except Exception:  # noqa: BLE001
+                pass
             resp = bytearray()
             resp.append(0x8F)
             resp.append(DATUM_POW_REJECTED)
@@ -1341,7 +1560,11 @@ class DatumPrimeSession:
     async def run(self) -> None:
         await self.handshake()
         peer = self.writer.get_extra_info("peername")
-        log.info("DATUM Gateway connected from %s", peer)
+        log.info(
+            "DATUM Gateway connected from %s ua=%r",
+            peer,
+            self.client_ua or "(unknown)",
+        )
         while True:
             hdr_x = await self._read_exact(4)
             hdr_p = xor_header(hdr_x, self.recv_hdr_key)
@@ -1398,11 +1621,19 @@ async def handle_client(
         # Internet probes / wrong protocol — no traceback spam
         log.debug("ignored non-DATUM probe from %s (%s)", peer, exc)
     except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError):
-        log.info("DATUM Gateway disconnected %s", peer)
+        log.info(
+            "DATUM Gateway disconnected %s ua=%r",
+            peer,
+            getattr(sess, "client_ua", "") or "(unknown)",
+        )
     except Exception:
         log.exception("DATUM Prime session error from %s", peer)
     finally:
         coinbaser_cache.gateway_sessions = max(0, coinbaser_cache.gateway_sessions - 1)
+        try:
+            coinbaser_cache.drop_gateway_session(sess.peer_key)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             writer.close()
             await writer.wait_closed()
