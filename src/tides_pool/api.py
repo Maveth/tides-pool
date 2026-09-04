@@ -1272,15 +1272,19 @@ async def _coinbaser_payload() -> CoinbaserResponse:
         addr = str(o.get("address") or "")
         if kind == "ops":
             name = "ops"
+            # Ops fee line shares the pool_ops address with miner shares when
+            # hashrate also mined there — don't show that miner nickname here.
+            nick = "OPERATION FEE"
         else:
             name = await _worker_name_for_address(addr)
+            nick = nmap.get(addr)
         outputs.append(
             CoinbaseOutput(
                 address=addr,
                 sats=int(o.get("sats") or 0),
                 kind=kind,
                 name=name,
-                nickname=nmap.get(addr),
+                nickname=nick,
             )
         )
     return CoinbaserResponse(
