@@ -47,6 +47,9 @@ class PoolStats(BaseModel):
     pool_name: str = "TIDES lab"
     pool_ops_address: str = ""
     rpc_ok: bool = False
+    # Live Knots identity from getnetworkinfo (e.g. /Satoshi:29.4.1/Knots:20260508/)
+    node_subversion: str | None = None
+    node_version: int | None = None  # bip147-style packed version int from getnetworkinfo
     address_work_cap: int = 0
     address_work_cap_window_sec: int = 3600
     gpu_baseline_hs: float = 0.0
@@ -120,6 +123,9 @@ class Contributor(BaseModel):
     hashrate_hs: float = 0.0
     # live = ~10m HR; idle = this-block work but quiet; offline = no this-block work
     activity: str = "idle"  # "live" | "idle" | "offline"
+    # 0 = still hashing this unfinished block; N = last shares were during the Nth-last confirmed find
+    last_share_blocks_ago: int = 0
+    last_share_block_height: int | None = None  # confirmed height when ago>=1; None if CURRENT
     quarantined: bool = False
     quarantine_reason: str | None = None
     nickname: str | None = None  # last coinbase secondary tag seen for this address

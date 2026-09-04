@@ -256,6 +256,35 @@ footer {
   font-family: var(--mono);
 }
 
+/* Worker / nickname cells — keep tables from blowing out on long tags.
+   Ellipsis lives on .clip-text (not the td): auto table layout ignores
+   td max-width for unbroken strings like long coinbase nicknames. */
+td.clip,
+td.clip-wide {
+  max-width: 10rem;
+  vertical-align: middle;
+}
+td.clip-wide {
+  max-width: 14rem;
+}
+td.clip .clip-text,
+td.clip-wide .clip-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 10rem;
+}
+td.clip-wide .clip-text {
+  max-width: 14rem;
+}
+@media (max-width: 900px) {
+  td.clip,
+  td.clip-wide { max-width: 7rem; }
+  td.clip .clip-text,
+  td.clip-wide .clip-text { max-width: 7rem; }
+}
+
 
 .rules {
   margin-top: 0.75rem;
@@ -418,19 +447,33 @@ tr.row-finder:hover td {
 tr.row-ops td {
   background: rgba(110, 168, 255, 0.08);
 }
+.kind-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.12rem;
+  font-size: 1.15rem;
+  line-height: 1;
+  letter-spacing: 0;
+  cursor: help;
+  user-select: none;
+}
 .kind-finder {
-  display: inline-block;
   font-weight: 700;
   color: var(--accent);
-  letter-spacing: 0.01em;
+  filter: drop-shadow(0 0 6px rgba(61, 214, 198, 0.35));
 }
 .kind-finder-inline {
   color: var(--accent);
   font-weight: 650;
+  cursor: help;
+}
+.kind-tides {
+  opacity: 0.92;
 }
 .kind-ops {
   color: var(--accent2);
   font-weight: 600;
+  font-size: 1.05rem;
 }
 .more-link {
   margin: 0.6rem 0 0;
@@ -524,6 +567,30 @@ tr.row-ops td {
 }
 .connect-body .join.box { margin-top: 1rem; }
 .connect-body h2 { margin-top: 0.75rem; }
+.connect-stores {
+  margin: 0.55rem 0 0.35rem 1.1rem;
+  padding: 0;
+  line-height: 1.45;
+}
+.connect-stores li { margin: 0.35rem 0; }
+.connect-shot {
+  margin: 0.75rem 0 0.25rem;
+  padding: 0;
+  max-width: 100%;
+}
+.connect-shot img {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0b1220;
+}
+.connect-shot figcaption {
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+}
 
 /* Miner page collapsible panels (payout history / shares) */
 .miner-panel {

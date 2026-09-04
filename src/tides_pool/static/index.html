@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260903i" />
+  <link rel="stylesheet" href="/static/style.css?v=20260904kind" />
 </head>
 <body>
   <header class="top">
@@ -115,6 +115,7 @@
             <button type="button" data-range="1h">1h</button>
             <button type="button" data-range="24h" class="active">24h</button>
             <button type="button" data-range="7d">1w</button>
+            <button type="button" data-range="window" title="Payout window (7 confirmed finds + current) — length follows find rate">Window</button>
           </div>
         </div>
         <p class="muted chart-sub">Pool vs network · click a find → mempool</p>
@@ -128,7 +129,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
+              <tr><th title="⛏️ mining share · ⛏️🏆 mining + finder bonus · ⚙️ ops fee">Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
             </thead>
             <tbody id="coinbaserBody"><tr><td colspan="4">Loading…</td></tr></tbody>
           </table>
@@ -153,13 +154,14 @@
                   <th>Address</th>
                   <th title="Last coinbase secondary tag seen when this address found a block">Nickname</th>
                   <th>Shares</th>
+                  <th title="Most recent pool find where this address still had shares. CURRENT = hashing this unfinished block. N ago = last shares were N confirmed finds back (less dilution as they age out).">Last share</th>
                   <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
                   <th title="Total work in the payout window (7 confirmed finds + current)">Total work</th>
                   <th>~H/s</th>
                   <th>Payout %</th>
                 </tr>
               </thead>
-              <tbody id="contribBody"><tr><td colspan="9">Loading…</td></tr></tbody>
+              <tbody id="contribBody"><tr><td colspan="10">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -225,6 +227,7 @@
             <button type="button" data-range="1h">1h</button>
             <button type="button" data-range="24h" class="active">24h</button>
             <button type="button" data-range="7d">1w</button>
+            <button type="button" data-range="window" title="Payout window (7 confirmed finds + current) — length follows find rate">Window</button>
           </div>
         </div>
         <p class="muted chart-sub">From your accepted shares · axis in TH/s · markers = your finds</p>
@@ -279,6 +282,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260903i" defer></script>
+  <script src="/static/app.js?v=20260904kind" defer></script>
 </body>
 </html>

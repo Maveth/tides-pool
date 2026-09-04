@@ -68,11 +68,17 @@ class BitcoinRPC:
         return (50 * 100_000_000) >> halvings
 
     def estimate_next_reward(self) -> int:
-        """Best-effort next-block reward: GBT coinbasevalue (subsidy+fees) else subsidy."""
-        try:
-            tmpl = self.call("getblocktemplate", [{"rules": ["segwit"]}])
-            if isinstance(tmpl, dict) and tmpl.get("coinbasevalue"):
-                return int(tmpl["coinbasevalue"])
-        except BitcoinRPCError:
-            pass
+        """Best-effort next-block reward: GBT coinbasevalue (subsidy+fees) else subsidy.
+
+        Blake2b Knots refuses templates that omit the blake2b rule, so ask for
+        both segwit and blake2b. Without blake2b this fell through to subsidy
+        only and the website coinbaser drifted from live Gateway amounts.
+        """
+        for rules in (["segwit", "blake2b"], ["segwit"]):
+            try:
+                tmpl = self.call("getblocktemplate", [{"rules": rules}])
+                if isinstance(tmpl, dict) and tmpl.get("coinbasevalue"):
+                    return int(tmpl["coinbasevalue"])
+            except BitcoinRPCError:
+                continue
         return self.estimatesubsidy()

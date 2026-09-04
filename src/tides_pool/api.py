@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,6 +59,9 @@ _coinbaser_cache = None  # CoinbaserSplitCache | None
 async def lifespan(_app: FastAPI):
     global store, _sync_task, _rpc_ok, _prime_server, _pool_pubkey_hex, _coinbaser_cache
     logging.basicConfig(level=logging.INFO)
+    role = settings.normalized_role()
+    log.info("tides-pool starting role=%s", role)
+
     dsn = settings.database_url
     if dsn.startswith("postgresql"):
         try:
@@ -72,31 +76,71 @@ async def lifespan(_app: FastAPI):
         store = MemoryStore()
         await store.ensure_ready()
 
-    # Pull live RC3 tip — do not invent difficulty=1 / fake reward forever
-    try:
-        await sync_once(store, settings)
-        _rpc_ok = True
-    except Exception as exc:  # noqa: BLE001
-        log.warning("initial RC3 sync failed: %s", exc)
-        _rpc_ok = False
-        if await store.get_meta("block_difficulty") is None:
-            await store.set_meta("block_difficulty", "1")
-        if await store.get_meta("reward_estimate") is None:
-            await store.set_meta("reward_estimate", str(50 * 100_000_000))
+    if settings.runs_chain_sync():
+        try:
+            await sync_once(store, settings)
+            _rpc_ok = True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("initial chain sync failed: %s", exc)
+            _rpc_ok = False
+            if await store.get_meta("block_difficulty") is None:
+                await store.set_meta("block_difficulty", "1")
+            if await store.get_meta("reward_estimate") is None:
+                await store.set_meta("reward_estimate", str(50 * 100_000_000))
+    else:
+        try:
+            _rpc_ok = (await store.get_meta("chain_height")) is not None
+        except Exception:  # noqa: BLE001
+            _rpc_ok = False
 
     keys_path = Path(os.environ.get("TIDES_POOL_KEYS_PATH", "/app/data/pool_keys.json"))
-    try:
-        _prime_server, keys, _coinbaser_cache = await start_datum_prime(
-            settings, store, keys_path
-        )
-        _pool_pubkey_hex = keys.pubkey_hex
-    except Exception as exc:  # noqa: BLE001
-        log.exception("DATUM Prime failed to start: %s", exc)
-        _prime_server = None
-        _coinbaser_cache = None
+    _prime_server = None
+    _coinbaser_cache = None
+    _pool_pubkey_hex = ""
+    if settings.runs_prime():
+        try:
+            _prime_server, keys, _coinbaser_cache = await start_datum_prime(
+                settings, store, keys_path
+            )
+            _pool_pubkey_hex = keys.pubkey_hex
+        except Exception as exc:  # noqa: BLE001
+            log.exception("DATUM Prime failed to start: %s", exc)
+            _prime_server = None
+            _coinbaser_cache = None
+    else:
+        # Web role: read pubkey from keys file (field is pool_pubkey) or Prime /api/info.
+        try:
+            if keys_path.is_file():
+                raw = json.loads(keys_path.read_text(encoding="utf-8"))
+                _pool_pubkey_hex = str(
+                    raw.get("pool_pubkey")
+                    or raw.get("pubkey_hex")
+                    or raw.get("pubkey")
+                    or ""
+                ).strip()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("web role: could not read pool keys for pubkey: %s", exc)
+        if not _pool_pubkey_hex:
+            try:
+                import urllib.request
+
+                # Compose: tides-web → tides-prime:8080 (host maps that to :8089).
+                prime_http = int(os.environ.get("TIDES_PRIME_HTTP_PORT", "8080"))
+                with urllib.request.urlopen(
+                    f"http://{settings.prime_host}:{prime_http}/api/info",
+                    timeout=5,
+                ) as resp:
+                    info = json.loads(resp.read().decode())
+                _pool_pubkey_hex = str(info.get("pool_pubkey") or "").strip()
+                if _pool_pubkey_hex:
+                    log.info("web role: loaded pool_pubkey from prime /api/info")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("web role: prime pubkey fetch failed: %s", exc)
 
     _stop_sync.clear()
-    _sync_task = asyncio.create_task(chain_sync_loop(store, settings, _stop_sync))
+    _sync_task = None
+    if settings.runs_chain_sync():
+        _sync_task = asyncio.create_task(chain_sync_loop(store, settings, _stop_sync))
     yield
     _stop_sync.set()
     if _sync_task:
@@ -107,10 +151,17 @@ async def lifespan(_app: FastAPI):
     await store.close()
 
 
+def _probe_prime_tcp(host: str, port: int, *, timeout: float = 1.5) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
 
 app = FastAPI(title="tides-pool", version=__version__, lifespan=lifespan)
 
-if STATIC_DIR.is_dir():
+if STATIC_DIR.is_dir() and settings.normalized_role() != "prime":
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -231,6 +282,11 @@ def _short_addr_html(addr: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
+    if settings.normalized_role() == "prime":
+        return HTMLResponse(
+            "<h1>tides-prime</h1><p>DATUM Prime process — UI is tides-web.</p>",
+            status_code=200,
+        )
     index_path = STATIC_DIR / "index.html"
     if not index_path.is_file():
         return HTMLResponse("<h1>tides-pool</h1><p>static UI missing</p>", status_code=500)
@@ -240,13 +296,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260903i"',
+        'src="/static/app.js?v=20260904kind"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260903i"',
+        'href="/static/style.css?v=20260904kind"',
         html,
         count=1,
     )
@@ -330,12 +386,29 @@ async def health() -> HealthResponse:
     }
     status = "ok"
 
-    # Prime
-    prime_ok = _prime_server is not None and getattr(_prime_server, "sockets", None)
-    checks["prime_listening"] = bool(prime_ok)
-    if not prime_ok:
-        status = "down"
-        warnings.append("prime_not_listening")
+    role = settings.normalized_role()
+    checks["role"] = role
+
+    if settings.runs_prime():
+        prime_ok = bool(
+            _prime_server is not None and getattr(_prime_server, "sockets", None)
+        )
+        checks["prime_listening"] = prime_ok
+        checks["prime_probe"] = "in_process"
+        if not prime_ok:
+            status = "down"
+            warnings.append("prime_not_listening")
+    else:
+        host = (settings.prime_host or "127.0.0.1").strip() or "127.0.0.1"
+        prime_ok = await asyncio.to_thread(
+            _probe_prime_tcp, host, int(settings.datum_prime_port)
+        )
+        checks["prime_listening"] = prime_ok
+        checks["prime_probe"] = f"tcp:{host}:{settings.datum_prime_port}"
+        if not prime_ok:
+            if status != "down":
+                status = "degraded"
+            warnings.append("prime_peer_unreachable")
 
     # DB
     try:
@@ -352,7 +425,7 @@ async def health() -> HealthResponse:
         status = "down"
         warnings.append(f"db_unreachable:{exc}")
 
-    # Coinbaser cache / reply metrics
+    # Coinbaser cache / reply metrics (local or Prime meta snapshot)
     cb = {}
     if _coinbaser_cache is not None:
         try:
@@ -362,9 +435,20 @@ async def health() -> HealthResponse:
             warnings.append(f"coinbaser_metrics_failed:{exc}")
             cb = {}
     else:
-        warnings.append("coinbaser_cache_missing")
-        if status != "down":
-            status = "degraded"
+        try:
+            raw = await store.get_meta("prime_health_json")
+            if raw:
+                cb = json.loads(raw)
+                checks["gateway_sessions"] = int(cb.get("gateway_sessions") or 0)
+                checks["coinbaser_source"] = "meta_snapshot"
+            else:
+                warnings.append("coinbaser_cache_missing")
+                if status != "down" and role == "all":
+                    status = "degraded"
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"coinbaser_meta_failed:{exc}")
+            if status != "down" and role == "all":
+                status = "degraded"
     checks["coinbaser"] = cb
 
     # RPC
@@ -524,15 +608,23 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
     hr_window = 600
     recent = await store.list_share_rows_since(hr_window, limit=50_000)
     # "This block" = shares after the latest confirmed find's share_head_seq.
-    confirmed_one = await store.list_confirmed_blocks(limit=1)
+    n_win = max(int(settings.window_blocks or 8), 1)
+    confirmed = await store.list_confirmed_blocks(limit=n_win)
     current_since = None
-    if confirmed_one and confirmed_one[0].share_head_seq is not None:
-        current_since = int(confirmed_one[0].share_head_seq)
+    if confirmed and confirmed[0].share_head_seq is not None:
+        current_since = int(confirmed[0].share_head_seq)
+    # Newest-first (height, share_head_seq) for "last share N ago" labels.
+    confirmed_heads = [
+        (int(b.height), int(b.share_head_seq))
+        for b in confirmed
+        if b.share_head_seq is not None
+    ]
     rows = contributor_rows(
         window,
         recent=recent,
         hashrate_window_sec=hr_window,
         current_since_seq=current_since,
+        confirmed_heads=confirmed_heads,
     )[:limit]
     addrs = [r["address"] for r in rows]
     qmap = await store.list_quarantines(addrs)
@@ -559,17 +651,83 @@ _CHART_RANGES: dict[str, tuple[int, int]] = {
     "24h": (86400, 600),
     "7d": (7 * 86400, 3600),
     "1w": (7 * 86400, 3600),
+    # "window" is dynamic (payout period) — resolved in _chart_window()
 }
 
 
-def _chart_window(range_key: str) -> tuple[str, int, int, datetime, datetime]:
+def _bucket_for_span(range_sec: int) -> int:
+    """Pick a chart bucket so a variable-length payout window stays readable."""
+    s = max(int(range_sec), 1)
+    if s <= 3 * 3600:
+        return 60
+    if s <= 24 * 3600:
+        return 600
+    if s <= 3 * 86400:
+        return 1800
+    if s <= 14 * 86400:
+        return 3600
+    return 7200
+
+
+async def _payout_window_chart_start(end: datetime) -> tuple[datetime, dict | None]:
+    """Start time for the live payout window chart range + window_meta stub."""
+    n_win = max(int(settings.window_blocks or 8), 1)
+    confirmed = await store.list_confirmed_blocks(limit=n_win)
+    if len(confirmed) >= n_win:
+        cutoff_block = confirmed[n_win - 1]
+        newer = confirmed[: n_win - 1]
+        cts = cutoff_block.accounted_at
+        if cts is None:
+            return end - timedelta(seconds=86400), None
+        if cts.tzinfo is None:
+            cts = cts.replace(tzinfo=timezone.utc)
+        meta = {
+            "start_t": int(cts.timestamp()),
+            "end_t": int(end.timestamp()),
+            "cutoff_height": cutoff_block.height,
+            "finds_in_window": len(newer),
+            "window_blocks": n_win,
+            "label": f"{max(n_win - 1, 0)} confirmed + current",
+        }
+        return cts, meta
+    if confirmed:
+        oldest = confirmed[-1]
+        ots = oldest.accounted_at
+        if ots is None:
+            return end - timedelta(seconds=86400), None
+        if ots.tzinfo is None:
+            ots = ots.replace(tzinfo=timezone.utc)
+        meta = {
+            "start_t": int(ots.timestamp()),
+            "end_t": int(end.timestamp()),
+            "cutoff_height": None,
+            "finds_in_window": len(confirmed),
+            "window_blocks": n_win,
+            "label": f"{len(confirmed)} finds (building to {n_win})",
+        }
+        return ots, meta
+    return end - timedelta(seconds=86400), None
+
+
+async def _chart_window(
+    range_key: str,
+) -> tuple[str, int, int, datetime, datetime, dict | None]:
+    """Return (key, range_sec, bucket_sec, start, end, precomputed_window_meta|None)."""
     key = (range_key or "24h").strip().lower()
-    if key not in _CHART_RANGES:
-        raise HTTPException(status_code=400, detail="range must be 1h, 24h, or 7d")
-    range_sec, bucket_sec = _CHART_RANGES[key]
     end = datetime.now(timezone.utc)
+    if key in ("window", "pw", "payout", "inwindow", "in_window"):
+        key = "window"
+        start, win_meta = await _payout_window_chart_start(end)
+        range_sec = max(60, int((end - start).total_seconds()))
+        bucket_sec = _bucket_for_span(range_sec)
+        return key, range_sec, bucket_sec, start, end, win_meta
+    if key not in _CHART_RANGES:
+        raise HTTPException(
+            status_code=400, detail="range must be 1h, 24h, 7d, or window"
+        )
+    range_sec, bucket_sec = _CHART_RANGES[key]
     start = end - timedelta(seconds=range_sec)
-    return key, range_sec, bucket_sec, start, end
+    return key, range_sec, bucket_sec, start, end, None
 
 
 def _fill_hs_series(
@@ -649,7 +807,7 @@ async def _network_hs_series(
 
 @app.get("/api/charts/pool")
 async def charts_pool(range: str = Query("24h")) -> dict:
-    key, _range_sec, bucket_sec, start, end = _chart_window(range)
+    key, range_sec, bucket_sec, start, end, win_pre = await _chart_window(range)
     buckets = await store.share_work_buckets(
         start=start, end=end, bucket_sec=bucket_sec, address=None
     )
@@ -665,40 +823,42 @@ async def charts_pool(range: str = Query("24h")) -> dict:
     # Payout window: shares after Nth-last confirmed find → (N-1) confirmed + current.
     n_win = max(int(settings.window_blocks or 8), 1)
     confirmed = await store.list_confirmed_blocks(limit=n_win)
-    window_meta: dict | None = None
+    window_meta: dict | None = win_pre
     in_window_heights: set[int] = set()
     if len(confirmed) >= n_win:
         cutoff_block = confirmed[n_win - 1]  # Nth-last confirmed
         newer = confirmed[: n_win - 1]  # up to 7 finds after cutoff
         in_window_heights = {b.height for b in newer}
-        cts = cutoff_block.accounted_at
-        if cts is not None:
-            if cts.tzinfo is None:
-                cts = cts.replace(tzinfo=timezone.utc)
-            window_meta = {
-                "start_t": int(cts.timestamp()),
-                "end_t": int(end.timestamp()),
-                "cutoff_height": cutoff_block.height,
-                "finds_in_window": len(newer),
-                "window_blocks": n_win,
-                "label": f"{max(n_win - 1, 0)} confirmed + current",
-            }
+        if window_meta is None:
+            cts = cutoff_block.accounted_at
+            if cts is not None:
+                if cts.tzinfo is None:
+                    cts = cts.replace(tzinfo=timezone.utc)
+                window_meta = {
+                    "start_t": int(cts.timestamp()),
+                    "end_t": int(end.timestamp()),
+                    "cutoff_height": cutoff_block.height,
+                    "finds_in_window": len(newer),
+                    "window_blocks": n_win,
+                    "label": f"{max(n_win - 1, 0)} confirmed + current",
+                }
     elif confirmed:
         # Fewer than N finds: whole history is the window
-        oldest = confirmed[-1]
-        ots = oldest.accounted_at
-        if ots is not None:
-            if ots.tzinfo is None:
-                ots = ots.replace(tzinfo=timezone.utc)
-            in_window_heights = {b.height for b in confirmed}
-            window_meta = {
-                "start_t": int(ots.timestamp()),
-                "end_t": int(end.timestamp()),
-                "cutoff_height": None,
-                "finds_in_window": len(confirmed),
-                "window_blocks": n_win,
-                "label": f"{len(confirmed)} finds (building to {n_win})",
-            }
+        in_window_heights = {b.height for b in confirmed}
+        if window_meta is None:
+            oldest = confirmed[-1]
+            ots = oldest.accounted_at
+            if ots is not None:
+                if ots.tzinfo is None:
+                    ots = ots.replace(tzinfo=timezone.utc)
+                window_meta = {
+                    "start_t": int(ots.timestamp()),
+                    "end_t": int(end.timestamp()),
+                    "cutoff_height": None,
+                    "finds_in_window": len(confirmed),
+                    "window_blocks": n_win,
+                    "label": f"{len(confirmed)} finds (building to {n_win})",
+                }
 
     blocks_out = []
     for b in brows:
@@ -722,8 +882,10 @@ async def charts_pool(range: str = Query("24h")) -> dict:
                 "in_window": b.height in in_window_heights,
             }
         )
+    out_range = "7d" if key == "1w" else key
     return {
-        "range": key if key != "1w" else "7d",
+        "range": out_range,
+        "range_sec": range_sec,
         "bucket_sec": bucket_sec,
         "pool": pool,
         "network": network,
@@ -735,7 +897,7 @@ async def charts_pool(range: str = Query("24h")) -> dict:
 
 @app.get("/api/user/{address}/charts")
 async def charts_user(address: str, range: str = Query("24h")) -> dict:
-    key, _range_sec, bucket_sec, start, end = _chart_window(range)
+    key, range_sec, bucket_sec, start, end, _win_pre = await _chart_window(range)
     buckets = await store.share_work_buckets(
         start=start, end=end, bucket_sec=bucket_sec, address=address
     )
@@ -764,10 +926,12 @@ async def charts_user(address: str, range: str = Query("24h")) -> dict:
             }
         )
     return {
-        "range": key if key != "1w" else "7d",
+        "range": "7d" if key == "1w" else key,
+        "range_sec": range_sec,
         "bucket_sec": bucket_sec,
         "hashrate": hashrate,
         "blocks": blocks_out,
+        "window": _win_pre,
     }
 
 
@@ -1062,30 +1226,43 @@ async def _coinbaser_payload() -> CoinbaserResponse:
         if c is not None and getattr(c, "max_seq", None) is not None:
             head = int(c.max_seq)
     else:
-        # Fallback if Prime cache is unavailable (should be rare).
-        shares, _window, cutoff, _n = await _payout_window()
-        tides = split_reward(
-            shares,
-            reward_sats=reward_est,
-            block_difficulty=await _difficulty(),
-            window_blocks=settings.window_blocks,
-            miner_bps=miner_reward_bps(settings),
-            min_output_sats=settings.min_output_sats,
-            pool_ops_address=settings.pool_ops_address,
-            cutoff_seq=cutoff,
-            window_mode="pool_finds",
-        )
-        finder, credit = await store.pending_finder_credit()
-        raw = coinbase_suggestion(
-            tides,
-            pool_ops_address=settings.pool_ops_address or "ops-unconfigured",
-            finder_address=finder or "",
-            finder_credit_sats=credit,
-            min_output_sats=settings.min_output_sats,
-        )
-        window_work = int(tides.window_work)
-        head = shares[0].seq if shares else None
-        value = reward_est
+        try:
+            snap_raw = await store.get_meta("coinbaser_last_json")
+            if snap_raw:
+                snap = json.loads(snap_raw)
+                raw = list(snap.get("outputs") or [])
+                if snap.get("value"):
+                    value = int(snap["value"])
+                window_work = int(snap.get("window_work") or 0)
+                if snap.get("share_log_head_seq") is not None:
+                    head = int(snap["share_log_head_seq"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("coinbaser snapshot read failed: %s", exc)
+            raw = []
+        if not raw:
+            shares, _window, cutoff, _n = await _payout_window()
+            tides = split_reward(
+                shares,
+                reward_sats=reward_est,
+                block_difficulty=await _difficulty(),
+                window_blocks=settings.window_blocks,
+                miner_bps=miner_reward_bps(settings),
+                min_output_sats=settings.min_output_sats,
+                pool_ops_address=settings.pool_ops_address,
+                cutoff_seq=cutoff,
+                window_mode="pool_finds",
+            )
+            finder, credit = await store.pending_finder_credit()
+            raw = coinbase_suggestion(
+                tides,
+                pool_ops_address=settings.pool_ops_address or "ops-unconfigured",
+                finder_address=finder or "",
+                finder_credit_sats=credit,
+                min_output_sats=settings.min_output_sats,
+            )
+            window_work = int(tides.window_work)
+            head = shares[0].seq if shares else None
+            value = reward_est
 
     out_addrs = [str(o.get("address") or "") for o in raw if o.get("address")]
     nmap = await store.nicknames_for_addresses(out_addrs)
@@ -1208,9 +1385,20 @@ async def pool_pubkey_endpoint():
 
 @app.get("/api/info")
 async def info(request: Request) -> dict:
+    role = settings.normalized_role()
+    prime_up = bool(
+        _prime_server is not None and getattr(_prime_server, "sockets", None)
+    )
+    if role == "web" and not prime_up:
+        prime_up = await asyncio.to_thread(
+            _probe_prime_tcp,
+            (settings.prime_host or "127.0.0.1").strip() or "127.0.0.1",
+            int(settings.datum_prime_port),
+        )
     return {
         "name": "tides-pool",
         "version": __version__,
+        "role": role,
         "network": settings.network,
         "mempool_explorer_url": settings.mempool_explorer_url,
         "docs": str(request.base_url) + "docs",
@@ -1220,7 +1408,7 @@ async def info(request: Request) -> dict:
         "pool_port": settings.datum_prime_port,
         "pool_pubkey": _pool_pubkey_hex,
         "pool_pubkey_url": str(request.base_url) + "api/pool_pubkey",
-        "datum_prime_up": _prime_server is not None,
+        "datum_prime_up": prime_up,
         "join": {
             "pool_host": "tides.maveth.ca",
             "pool_port": settings.datum_prime_port,

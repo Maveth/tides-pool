@@ -4,6 +4,10 @@
 # UI:   host :8088
 # Prime: host :28916  (DATUM Gateways set pool_host + pool_port)
 #
+# Single process (role=all) below. To split website from Prime so UI restarts
+# do not bounce Gateways, also apply:
+#   docker compose -f docker-compose.yml -f docker-compose.split.yml up -d
+#
 # Defaults below match current MaVeTh mainnet TIDES/Prime ops (fee 5%,
 # finder 80% of fee, window_blocks=8, min share diff 2048). Override via env.
 

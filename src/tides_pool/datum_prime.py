@@ -285,7 +285,50 @@ class CoinbaserSplitCache:
             value=int(value),
             outs_list=outs,
         )
+        # Persist for tides-web (separate process) so /api/coinbaser matches Gateways.
+        try:
+            asyncio.create_task(
+                self._persist_web_snapshots(
+                    value=int(value),
+                    outs=outs,
+                    window_work=int(sum(int(s.work or 0) for s in shares)),
+                    max_seq=int(c.max_seq) if c.max_seq is not None else None,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return outs
+
+    async def _persist_web_snapshots(
+        self,
+        *,
+        value: int,
+        outs: list[dict],
+        window_work: int,
+        max_seq: int | None,
+    ) -> None:
+        """Best-effort meta for a split web process (no in-process cache)."""
+        try:
+            payload = {
+                "value": int(value),
+                "outputs": [
+                    {
+                        "address": str(o.get("address") or ""),
+                        "sats": int(o.get("sats") or 0),
+                        "kind": str(o.get("kind") or "tides"),
+                    }
+                    for o in outs
+                ],
+                "window_work": int(window_work),
+                "share_log_head_seq": max_seq,
+                "updated_at": time.time(),
+            }
+            await self.store.set_meta("coinbaser_last_json", json.dumps(payload))
+            await self.store.set_meta(
+                "prime_health_json", json.dumps(self.health_snapshot())
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("persist web snapshots failed: %s", exc)
 
     def window_work(self) -> int:
         c = self._cached

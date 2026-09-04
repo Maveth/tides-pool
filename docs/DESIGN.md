@@ -48,9 +48,14 @@ Ocean-like **stats site** (not a full portal):
 - Recent pool blocks
 - **Address lookup**: window %, estimated next payout, pending finder credit, **recent shares** for that address
 
-Served at `/` from the same FastAPI process (`src/tides_pool/static/`).
+Served at `/` from FastAPI (`src/tides_pool/static/`).
 
-**Live (NAS):** `http://192.168.0.143:8088/` (host port 8088; 8080 is SABnzbd).
+**Process roles (Phase 1):** `TIDES_ROLE=all|web|prime` (default `all`).
+- `web` — HTTP + static; no DATUM Prime; health probes `TIDES_PRIME_HOST:28916`; coinbaser UI prefers Prime-written `coinbaser_last_json` meta.
+- `prime` — Prime TCP + chain sync; minimal HTTP (`/api/health`); no static UI.
+- Compose split: `deploy/docker-compose.split.yml` (`tides-web` :8088, `tides-prime` :28916).
+
+**Live (NAS):** `http://192.168.0.143:8088/` (host port 8088; 8080 is SABnzbd). Still `role=all` until split cutover.
 
 
 ## Non-goals (v1)

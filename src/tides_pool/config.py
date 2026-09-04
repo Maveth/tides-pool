@@ -7,9 +7,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TIDES_", env_file=".env", extra="ignore")
 
+    # Process role: "all" (legacy one-box), "web" (HTTP only), "prime" (DATUM Prime + sync).
+    # Split so website deploys/restarts do not bounce Gateway sessions.
+    role: str = Field(
+        default="all",
+        description="all | web | prime — which subsystems this process runs",
+    )
+
     # HTTP API
     host: str = "0.0.0.0"
     port: int = 8080
+    # When role=web, health probes this host for Prime TCP (compose service name).
+    prime_host: str = "127.0.0.1"
 
     # Postgres
     database_url: str = "postgresql://tides:tides@localhost:5432/tides"
@@ -80,6 +89,25 @@ class Settings(BaseSettings):
     # or on invalidate (new confirmed find / finder credit). Gateway work_update
     # is separate (DATUM) — do not lower that to fix Prime load.
     coinbaser_cache_seconds: float = Field(default=15.0, ge=1.0, le=300.0)
+
+    def normalized_role(self) -> str:
+        r = (self.role or "all").strip().lower()
+        if r in ("web", "www", "ui", "api"):
+            return "web"
+        if r in ("prime", "datum", "pool"):
+            return "prime"
+        return "all"
+
+    def runs_prime(self) -> bool:
+        return self.normalized_role() in ("all", "prime")
+
+    def runs_web(self) -> bool:
+        """HTTP API + static. Prime-only still exposes /health for probes."""
+        return True
+
+    def runs_chain_sync(self) -> bool:
+        # Only one writer should reconcile blocks / sample net HR.
+        return self.normalized_role() in ("all", "prime")
 
     def quarantine_allowlisted(self, address: str) -> bool:
         addr = (address or "").strip()

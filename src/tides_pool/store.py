@@ -1947,6 +1947,7 @@ def contributor_rows(
     recent: list[ShareRow] | None = None,
     hashrate_window_sec: int = 600,
     current_since_seq: int | None = None,
+    confirmed_heads: list[tuple[int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build contributor rows for the payout window.
 
@@ -1954,14 +1955,20 @@ def contributor_rows(
     work_current / shares_current = shares newer than current_since_seq
     (typically the share_head_seq of the latest confirmed pool find = this block only).
     current_since_seq=None → treat the whole window as current (no confirmed finds yet).
+
+    confirmed_heads: newest-first list of (height, share_head_seq) for confirmed finds
+    in the payout window. Used to label last_share_blocks_ago / height.
     """
     work: dict[str, int] = {}
     shares: dict[str, int] = {}
     work_cur: dict[str, int] = {}
     shares_cur: dict[str, int] = {}
+    max_seq: dict[str, int] = {}
     for s in window:
         work[s.address] = work.get(s.address, 0) + s.work
         shares[s.address] = shares.get(s.address, 0) + 1
+        if s.address not in max_seq or s.seq > max_seq[s.address]:
+            max_seq[s.address] = int(s.seq)
         if current_since_seq is None or s.seq > current_since_seq:
             work_cur[s.address] = work_cur.get(s.address, 0) + s.work
             shares_cur[s.address] = shares_cur.get(s.address, 0) + 1
@@ -1972,10 +1979,31 @@ def contributor_rows(
         for r in recent:
             recent_work[r.address] = recent_work.get(r.address, 0) + r.work
 
+    heads = list(confirmed_heads or [])
+
+    def _last_share_label(addr: str) -> tuple[int, int | None]:
+        """Return (blocks_ago, height|None). ago=0 → CURRENT (unfinished block)."""
+        ms = max_seq.get(addr)
+        if ms is None:
+            return 0, None
+        if not heads:
+            return 0, None
+        newest_head = int(heads[0][1])
+        if ms > newest_head:
+            return 0, None  # CURRENT
+        for i, (height, head) in enumerate(heads):
+            prev_head = int(heads[i + 1][1]) if i + 1 < len(heads) else -1
+            if ms > prev_head:
+                # Shares landed while this confirmed find was the "current" block
+                return i + 1, int(height)
+        # Older than oldest head in list — attribute to oldest
+        return len(heads), int(heads[-1][0])
+
     rows = []
     for addr, w in work.items():
         rw = recent_work.get(addr, 0)
         hs = estimate_hashrate_hs(rw, hashrate_window_sec) if rw else 0.0
+        ago, last_h = _last_share_label(addr)
         rows.append(
             {
                 "address": addr,
@@ -1991,6 +2019,8 @@ def contributor_rows(
                     if hs > 0
                     else ("idle" if work_cur.get(addr, 0) > 0 else "offline")
                 ),
+                "last_share_blocks_ago": int(ago),
+                "last_share_block_height": last_h,
             }
         )
     rows.sort(key=lambda r: (-r["work"], r["address"]))

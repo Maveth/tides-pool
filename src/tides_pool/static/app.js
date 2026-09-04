@@ -66,6 +66,26 @@ function activityDot(c) {
   return `<span class="activity-dot offline" title="In the payout window, but no work on this block"></span>`;
 }
 
+/** Last pool-find era with shares: CURRENT or "N ago" (dilution ages out). */
+function lastShareLabel(c) {
+  const ago = Number(c && c.last_share_blocks_ago);
+  if (!Number.isFinite(ago) || ago <= 0) return "CURRENT";
+  return ago === 1 ? "1 ago" : `${ago} ago`;
+}
+
+function lastShareTitle(c) {
+  const ago = Number(c && c.last_share_blocks_ago);
+  const h = c && c.last_share_block_height;
+  if (!Number.isFinite(ago) || ago <= 0) {
+    return "Still has shares on the unfinished current block";
+  }
+  const heightBit = h != null ? ` (find #${h})` : "";
+  return (
+    `Last shares were during a pool find ${ago} confirmed block(s) ago${heightBit}. ` +
+    `Older work drops out of the payout window as new finds confirm — less dilution for active miners.`
+  );
+}
+
 function fmtInt(n) {
   return Number(n || 0).toLocaleString();
 }
@@ -186,6 +206,27 @@ function shortAddr(a) {
   return a.slice(0, 8) + "…" + a.slice(-6);
 }
 
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Truncated table cell; full text on hover via title. */
+function clipCell(text, { title = "", wide = false, mono = false } = {}) {
+  const raw = (text == null ? "" : String(text)).trim();
+  if (!raw || raw === "—") {
+    return `<td class="${wide ? "clip-wide" : "clip"}"><span class="muted">—</span></td>`;
+  }
+  const tip = title || raw;
+  const cls = [wide ? "clip-wide" : "clip", mono ? "mono" : ""].filter(Boolean).join(" ");
+  // Inner span is required: td max-width is ignored under table-layout:auto
+  // when content is a long unbroken string (nicknames / workers).
+  return `<td class="${cls}" title="${escapeHtml(tip)}"><span class="clip-text">${escapeHtml(raw)}</span></td>`;
+}
+
 function mempoolBase(info) {
   const u = (info && info.mempool_explorer_url) || window.MEMPOOL_URL || "https://mempool.maveth.ca";
   return String(u).replace(/\/$/, "");
@@ -254,7 +295,7 @@ function renderFeeFootnote(stats) {
   el.innerHTML =
     `<strong>Fees:</strong> <strong>${bpsPct(fee)}</strong> of each block · ` +
     `<strong>${bpsPct(finderShare)}</strong> of that fee → previous finder on the <em>next</em> block ` +
-    `(highlighted <span class="kind-finder-inline">tides+finder</span> line) · ` +
+    `(highlighted <span class="kind-finder-inline" title="Pickaxe + trophy">⛏️🏆</span> line) · ` +
     `ops keep <strong>${bpsPct(opsOfBlock)}</strong> of the block.<br />` +
     `${windowLabel}. <strong>Payout weight</strong> = sum of share difficulties (work), not share count. ` +
     `<strong>~H/s</strong> is estimated from recent work.`;
@@ -292,14 +333,25 @@ function kindCell(o, rewardEst) {
   const k = (o && o.kind) || "—";
   if (k === "tides+finder") {
     const bonus = finderBonusSats(rewardEst);
-    const bonusTxt = bonus > 0 ? ` · +${fmtBtc(bonus)}` : "";
-    return `<span class="kind-finder" title="TIDES work share + previous-finder bonus (see fee footnote)">tides+finder${bonusTxt}</span>`;
+    const tip =
+      bonus > 0
+        ? `Work share + previous-finder bonus · finder reward ~${fmtBtc(bonus)} (${fmtBtcTitle(bonus)})`
+        : "Work share + previous-finder bonus (see fee footnote)";
+    return `<span class="kind-ico kind-finder" title="${escapeHtml(tip)}" aria-label="Mining + finder bonus">${KIND_ICO.pickaxe}${KIND_ICO.trophy}</span>`;
   }
   if (k === "ops") {
-    return `<span class="kind-ops" title="Pool ops fee keep (see fee footnote)">ops</span>`;
+    return `<span class="kind-ico kind-ops" title="Pool ops fee keep (see fee footnote)" aria-label="Ops fee">${KIND_ICO.ops}</span>`;
   }
-  return k;
+  // Regular window work share
+  return `<span class="kind-ico kind-tides" title="TIDES window work share" aria-label="Mining share">${KIND_ICO.pickaxe}</span>`;
 }
+
+/** Kind column icons (emoji; title= carries the detail). */
+const KIND_ICO = {
+  pickaxe: "⛏️",
+  trophy: "🏆",
+  ops: "⚙️",
+};
 
 function renderCoinbaser(coinbaser) {
   const cbBody = document.getElementById("coinbaserBody");
@@ -318,7 +370,7 @@ function renderCoinbaser(coinbaser) {
       ? `~${fmtBtc(coinbaser.reward_sats_estimate)} total · ${outs.length} line(s) · window work ${fmtInt(coinbaser.window_work)}`
       : `No miner lines yet (~${fmtBtc(coinbaser.reward_sats_estimate)}) — empty window pays ops only`;
     if (finderOut && bonus > 0) {
-      note += ` · tides+finder includes ~${fmtBtc(bonus)} finder bonus`;
+      note += ` · ⛏️🏆 line includes ~${fmtBtc(bonus)} finder bonus`;
     }
     cbNote.textContent = note;
   }
@@ -331,12 +383,12 @@ function renderCoinbaser(coinbaser) {
       let rowClass = "";
       if (o.kind === "tides+finder") rowClass = ' class="row-finder"';
       else if (o.kind === "ops") rowClass = ' class="row-ops"';
-      const worker = (o.name || "").trim() || "—";
-      const nick = (o.nickname || "").trim() || "—";
+      const worker = (o.name || "").trim();
+      const nick = (o.nickname || "").trim();
       return `<tr${rowClass}>
       <td>${kindCell(o, coinbaser.reward_sats_estimate)}</td>
-      <td title="Stratum worker for this payout address">${worker}</td>
-      <td title="Last coinbase secondary tag (nickname) seen for this address">${nick}</td>
+      ${clipCell(worker, { title: worker ? `Stratum worker: ${worker}` : "" })}
+      ${clipCell(nick, { title: nick ? `Nickname: ${nick}` : "", wide: true })}
       <td class="mono"><a href="/address?a=${encodeURIComponent(o.address)}" title="${o.address}">${shortAddr(o.address)}</a></td>
       <td title="${fmtBtcTitle(o.sats)}">${fmtBtc(o.sats)}</td>
     </tr>`;
@@ -383,12 +435,6 @@ function renderBlocksTable(blocks, bodyId, info) {
       const worker = (b.finder_worker || "").trim();
       const nick = (b.finder_nickname || "").trim();
       const addr = b.finder_address || "";
-      const workerCell = worker
-        ? `<span class="mono" title="Stratum worker that submitted the block share">${worker}</span>`
-        : `<span class="muted">—</span>`;
-      const nickCell = nick
-        ? `<span title="Coinbase secondary tag at find time">${nick}</span>`
-        : `<span class="muted">—</span>`;
       const addrCell = addr
         ? `<a class="mono truncate" href="/address?a=${encodeURIComponent(addr)}" title="${addr}">${shortAddr(addr)}</a>`
         : `<span class="muted">—</span>`;
@@ -401,8 +447,8 @@ function renderBlocksTable(blocks, bodyId, info) {
       return `<tr${rowClass}>
         <td>${heightCell}</td>
         <td>${blockStatusBadge(b)}</td>
-        <td>${workerCell}</td>
-        <td>${nickCell}</td>
+        ${clipCell(worker, { title: worker ? `Stratum worker: ${worker}` : "", mono: true })}
+        ${clipCell(nick, { title: nick ? `Nickname: ${nick}` : "", wide: true })}
         <td>${addrCell}</td>
         <td>${reward}</td>
         <td>${fmtInt(b.difficulty)}</td>
@@ -425,6 +471,14 @@ let sharesAddress = "";
 
 function chartReady() {
   return typeof Chart !== "undefined";
+}
+
+/** Humanize chart span (payout window can be hours…weeks). */
+function fmtChartSpan(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m`;
+  if (s < 48 * 3600) return `${(s / 3600).toFixed(s < 10 * 3600 ? 1 : 0)}h`;
+  return `${(s / 86400).toFixed(s < 10 * 86400 ? 1 : 0)}d`;
 }
 
 function hsAxisMax(seriesList) {
@@ -458,7 +512,10 @@ function blockScatter(blocks, yMax, { inWindowOnly = null } = {}) {
     }));
 }
 
-/** Tight x-range from series (avoids Chart.js side padding). */
+/**
+ * X-range from series. Pad the right edge so find markers (r≈6) at "now"
+ * are not clipped for the first few minutes after a find.
+ */
 function chartXBounds(data) {
   const xs = [];
   for (const p of data.pool || []) xs.push(Number(p.t) * 1000);
@@ -466,14 +523,33 @@ function chartXBounds(data) {
     if (Number(p.hs) > 0) xs.push(Number(p.t) * 1000);
   }
   for (const b of data.blocks || []) xs.push(Number(b.t) * 1000);
+  let min;
+  let max;
   // Prefer the requested series span from pool buckets when present
   if ((data.pool || []).length >= 2) {
     const a = Number(data.pool[0].t) * 1000;
     const b = Number(data.pool[data.pool.length - 1].t) * 1000;
-    return { min: Math.min(a, b), max: Math.max(a, b) };
+    min = Math.min(a, b);
+    max = Math.max(a, b);
+  } else if (!xs.length) {
+    return {};
+  } else {
+    min = Math.min(...xs);
+    max = Math.max(...xs);
   }
-  if (!xs.length) return {};
-  return { min: Math.min(...xs), max: Math.max(...xs) };
+  // Also cover any find past the last bucket (fresh block at tip).
+  if (xs.length) {
+    max = Math.max(max, Math.max(...xs));
+    min = Math.min(min, Math.min(...xs));
+  }
+  const span = Math.max(0, max - min);
+  // ~3% of the window (floor 15m, cap 6h). On 7d a fixed 45m pad was only
+  // ~3px and still clipped r=6 find dots; percent-of-span keeps both ranges honest.
+  const rightPad = Math.min(
+    Math.max(span * 0.03, 15 * 60 * 1000),
+    6 * 3600 * 1000
+  );
+  return { min, max: max + rightPad };
 }
 
 /** Soft vertical band for the payout window (7 confirmed + current). */
@@ -576,13 +652,18 @@ async function loadPoolChart(range) {
       : "Network (tracking from now — history fills in over time)";
   const sub = document.querySelector("#poolChartBox .chart-sub");
   if (sub) {
+    const spanSec = Number(data.range_sec || 0);
+    const spanBit =
+      data.range === "window" && spanSec > 0
+        ? ` · x-axis = payout window (~${fmtChartSpan(spanSec)})`
+        : "";
     const winBit = win
       ? ` · shaded = payout window (${win.label}) · bright dots = finds in window`
       : " · markers = our finds";
     sub.textContent =
       netSrc === "samples"
-        ? `Pool vs network (sampled) ${winBit}`
-        : `Pool vs network — sampling started; line fills in as we collect ~1/min ${winBit}`;
+        ? `Pool vs network (sampled)${spanBit}${winBit}`
+        : `Pool vs network — sampling started; line fills in as we collect ~1/min${spanBit}${winBit}`;
   }
   const xBound = chartXBounds(data);
   const allFinds = findsIn.concat(findsOut);
@@ -644,7 +725,7 @@ async function loadPoolChart(range) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { left: 0, right: 0, top: 4, bottom: 0 } },
+      layout: { padding: { left: 0, right: 12, top: 4, bottom: 0 } },
       interaction: { mode: "nearest", intersect: true },
       onHover(evt, els) {
         const tip = els && els.length ? els[0] : null;
@@ -757,6 +838,16 @@ async function loadUserChart(address, range) {
     network: [],
     blocks: data.blocks,
   });
+  const userSub = document.querySelector("#userChartBox .chart-sub") ||
+    document.querySelector("#minerPanel .chart-sub");
+  if (userSub) {
+    const spanSec = Number(data.range_sec || 0);
+    const base = "From your accepted shares · axis in TH/s · markers = your finds";
+    userSub.textContent =
+      data.range === "window" && spanSec > 0
+        ? `${base} · x-axis = payout window (~${fmtChartSpan(spanSec)})`
+        : base;
+  }
   userChartObj = destroyChart(userChartObj);
   userChartObj = new Chart(canvas.getContext("2d"), {
     plugins: [findStemPlugin],
@@ -789,7 +880,7 @@ async function loadUserChart(address, range) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { left: 0, right: 0, top: 4, bottom: 0 } },
+      layout: { padding: { left: 0, right: 12, top: 4, bottom: 0 } },
       interaction: { mode: "nearest", intersect: true },
       onHover(evt, els) {
         const tip = els && els.length ? els[0] : null;
@@ -951,7 +1042,7 @@ async function loadPool() {
 
   const cbody = document.getElementById("contribBody");
   if (cbody && !contrib.length) {
-    cbody.innerHTML = `<tr><td colspan="9" class="muted">No shares in window yet</td></tr>`;
+    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
   } else if (cbody) {
     cbody.innerHTML = contrib
       .map(
@@ -959,8 +1050,9 @@ async function loadPool() {
         <td class="activity-cell">${activityDot(c)}</td>
         <td>${i + 1}</td>
         <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
-        <td title="Last coinbase secondary tag (nickname) seen on a find by this address">${(c.nickname || "—")}</td>
+        ${clipCell(c.nickname, { title: c.nickname ? `Nickname: ${c.nickname}` : "", wide: true })}
         <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
+        <td title="${lastShareTitle(c)}">${lastShareLabel(c)}</td>
         <td title="Work since last confirmed pool find (unfinished current block)">${fmtInt(c.work_current ?? 0)}</td>
         <td title="Total work in payout window (7 confirmed + current)">${fmtInt(c.work)}</td>
         <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
@@ -1130,14 +1222,15 @@ async function loadSharesPage(address, offset) {
         : `<tr><td colspan="4" class="muted">No shares for this address yet</td></tr>`;
   } else {
     sbody.innerHTML = rows
-      .map(
-        (s) => `<tr>
+      .map((s) => {
+        const worker = (s.worker || "").trim();
+        return `<tr>
         <td class="mono">${s.seq}</td>
-        <td class="mono">${s.worker || "—"}</td>
+        ${clipCell(worker, { title: worker ? `Stratum worker: ${worker}` : "", mono: true })}
         <td>${fmtInt(s.work)}</td>
         <td class="mono">${fmtLocalTime(s.accepted_at)}</td>
-      </tr>`
-      )
+      </tr>`;
+      })
       .join("");
   }
   updateSharesPager();
