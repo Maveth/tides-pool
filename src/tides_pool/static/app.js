@@ -1040,35 +1040,15 @@ async function loadPool() {
   ].join("");
   renderFeeFootnote(stats);
 
-  const luckNote = document.getElementById("contribLuckNote");
-  if (luckNote) {
-    const wl = stats.window_luck_pct;
-    const wf = Number(stats.window_luck_finds || 0);
-    if (wl != null && Number.isFinite(Number(wl))) {
-      luckNote.innerHTML =
-        `Pool window luck: <strong title="100 × finds × network_diff / window_work">${Number(wl).toFixed(1)}%</strong>` +
-        ` <span class="muted">(${fmtInt(wf)} find${wf === 1 ? "" : "s"} × diff / window work)</span>.`;
-    } else {
-      luckNote.textContent = "";
-    }
-  }
-
   const cbody = document.getElementById("contribBody");
   if (cbody && !contrib.length) {
-    cbody.innerHTML = `<tr><td colspan="11" class="muted">No shares in window yet</td></tr>`;
+    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
   } else if (cbody) {
+    // Luck % column hidden for now — per-addr finder luck in a short window is
+    // misleading (tiny work + a find → huge %; big hashrate + 0 finds → —).
     cbody.innerHTML = contrib
-      .map((c, i) => {
-        const lf = Number(c.luck_finds || 0);
-        const lp = c.luck_pct;
-        let luckCell = `<td class="muted" title="No finds by this address in the current payout window">—</td>`;
-        if (lp != null && Number.isFinite(Number(lp))) {
-          const tip =
-            `${lf} find${lf === 1 ? "" : "s"} × network_diff / your_work × 100% = ${Number(lp).toFixed(2)}%` +
-            ` · 100% = expected for this work`;
-          luckCell = `<td title="${tip}">${Number(lp).toFixed(1)}%</td>`;
-        }
-        return `<tr>
+      .map(
+        (c, i) => `<tr>
         <td class="activity-cell">${activityDot(c)}</td>
         <td>${i + 1}</td>
         <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
@@ -1076,12 +1056,11 @@ async function loadPool() {
         <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
         <td title="${lastShareTitle(c)}">${lastShareLabel(c)}</td>
         <td title="Work since last confirmed pool find (unfinished current block)">${fmtInt(c.work_current ?? 0)}</td>
-        <td title="Total work in payout window (7 confirmed + current)">${fmtInt(c.work)}</td>
-        ${luckCell}
+        <td title="Total work in payout window only (7 confirmed + current) — not lifetime">${fmtInt(c.work)}</td>
         <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
         <td title="Your total window work ÷ window work">${Number(c.share_pct || 0).toFixed(2)}%</td>
-      </tr>`;
-      })
+      </tr>`
+      )
       .join("");
   }
 

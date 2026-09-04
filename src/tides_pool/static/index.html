@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260904luck" />
+  <link rel="stylesheet" href="/static/style.css?v=20260904noluck" />
 </head>
 <body>
   <header class="top">
@@ -139,7 +139,7 @@
       <div class="stack-panels">
         <div>
           <h2>Contributors</h2>
-          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <span id="contribLuckNote"></span></p>
+          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <strong>Total work</strong> is this window only — not lifetime.</p>
           <p class="muted activity-legend">
             <span class="activity-dot live" title="Shares in the last ~10 minutes"></span> hashing now
             <span class="activity-dot idle" title="Work on this block, but quiet lately"></span> this block, idle
@@ -156,13 +156,12 @@
                   <th>Shares</th>
                   <th title="Most recent pool find where this address still had shares. CURRENT = hashing this unfinished block. N ago = last shares were N confirmed finds back (less dilution as they age out).">Last share</th>
                   <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
-                  <th title="Total work in the payout window (7 confirmed finds + current)">Total work</th>
-                  <th title="Finder luck this window: finds_by_you × network_diff / your_work × 100%. 100% = expected. — if you have not found a block in this window.">Luck %</th>
+                  <th title="Total work in the payout window only (7 confirmed finds + current) — not lifetime">Total work</th>
                   <th>~H/s</th>
                   <th>Payout %</th>
                 </tr>
               </thead>
-              <tbody id="contribBody"><tr><td colspan="11">Loading…</td></tr></tbody>
+              <tbody id="contribBody"><tr><td colspan="10">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -283,6 +282,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260904luck" defer></script>
+  <script src="/static/app.js?v=20260904noluck" defer></script>
 </body>
 </html>
