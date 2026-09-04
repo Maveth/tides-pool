@@ -485,6 +485,10 @@ async def health() -> HealthResponse:
             warnings.append(f"coinbaser_meta_failed:{exc}")
             if status != "down" and role == "all":
                 status = "degraded"
+    # Public web helper only — Prime (:8089 / logs) keeps full peer IPs.
+    if role != "prime":
+        if isinstance(cb.get("gateway_uas"), list):
+            cb["gateway_uas"] = _mask_gateway_uas(cb.get("gateway_uas") or [])
     checks["coinbaser"] = cb
 
     # RPC
@@ -533,8 +537,10 @@ async def health() -> HealthResponse:
         "distinct": int(cb.get("bad_payout_distinct") or 0),
         "top": cb.get("bad_payout_top") or [],
     }
-    # Mask client IPs on the public health helper (keep last octet only).
-    checks["gateway_uas"] = _mask_gateway_uas(cb.get("gateway_uas") or [])
+    if role != "prime":
+        checks["gateway_uas"] = _mask_gateway_uas(cb.get("gateway_uas") or [])
+    else:
+        checks["gateway_uas"] = cb.get("gateway_uas") or []
     checks["ua_handshakes_top"] = cb.get("ua_handshakes_top") or []
     checks["ua_reject27_top"] = cb.get("ua_reject27_top") or []
     checks["ua_bad_payout_top"] = cb.get("ua_bad_payout_top") or []

@@ -163,21 +163,39 @@ function fmtHashrate(hs) {
   return n.toFixed(0) + " H/s";
 }
 
-/** Network axis always in PH/s (e.g. 0.50 PH/s, not 500 TH/s). */
+/** Network tooltip value in PH/s. */
 function fmtHashratePH(hs) {
   const n = Number(hs || 0);
   if (n <= 0) return "—";
-  return (n / 1e15).toFixed(2) + " PH/s";
+  const ph = n / 1e15;
+  const s = ph >= 10 ? ph.toFixed(1) : ph.toFixed(2);
+  return s.replace(/\.?0+$/, "") + " PH/s";
 }
 
-/** Miner chart axis always in TH/s (e.g. 0.12 TH/s, not 117 GH/s). */
+/** Miner tooltip value in TH/s. */
 function fmtHashrateTH(hs) {
   const n = Number(hs || 0);
   if (n <= 0) return "—";
   const th = n / 1e12;
-  if (th >= 100) return th.toFixed(1) + " TH/s";
-  if (th >= 10) return th.toFixed(2) + " TH/s";
-  return th.toFixed(2) + " TH/s";
+  if (th >= 100) return Math.round(th) + " TH/s";
+  const s = th >= 10 ? th.toFixed(1) : th.toFixed(2);
+  return s.replace(/\.?0+$/, "") + " TH/s";
+}
+
+/** Y-axis tick: TH number only (unit lives in axis title). */
+function fmtAxisTH(hs) {
+  const th = Number(hs || 0) / 1e12;
+  if (!Number.isFinite(th) || th <= 0) return "0";
+  if (th >= 100) return String(Math.round(th));
+  const s = th >= 10 ? th.toFixed(1) : th.toFixed(2);
+  return s.replace(/\.?0+$/, "");
+}
+
+/** Y-axis tick: PH number only (unit lives in axis title). Prefer whole PH. */
+function fmtAxisPH(hs) {
+  const ph = Number(hs || 0) / 1e15;
+  if (!Number.isFinite(ph) || ph <= 0) return "0";
+  return String(Math.round(ph));
 }
 
 /** Expected duration (e.g. est. time to find a block). */
@@ -277,12 +295,9 @@ function renderFeeFootnote(stats) {
   // Single location for fee / finder / window copy (coinbaser panel stays short).
   const el = document.getElementById("feeFootnote");
   if (!el) return;
-  const fee = Number(stats.fee_bps ?? 500);
-  const finderShare = Number(stats.finder_fee_share_bps ?? 8000);
+  const fee = Number(stats.fee_bps ?? 0);
   const windowBlocks = Number(stats.window_blocks ?? 8);
   const paidInWindow = Math.max(windowBlocks - 1, 0);
-  const finderOfBlock = Math.floor((fee * finderShare) / 10000);
-  const opsOfBlock = fee - finderOfBlock;
   const mode = stats.window_mode || "pool_finds";
   const confFinds = Number(stats.window_confirmed_finds ?? 0);
   const windowLabel =
@@ -292,10 +307,20 @@ function renderFeeFootnote(stats) {
         (confFinds ? `; have ${confFinds}` : "") +
         `)`
       : `Payout window ≈ <strong>${windowBlocks}×</strong> network difficulty`;
+  if (fee <= 0) {
+    el.innerHTML =
+      `<strong>Fees:</strong> <strong>0%</strong> — coinbase pays window work only (no ops cut, no in-coinbase finder bonus). ` +
+      `Block-finder bonuses are paid manually by ops off-chain when applicable.<br />` +
+      `${windowLabel}. <strong>Payout weight</strong> = sum of share difficulties (work), not share count. ` +
+      `<strong>~H/s</strong> is estimated from recent work.`;
+    return;
+  }
+  const finderShare = Number(stats.finder_fee_share_bps ?? 8000);
+  const finderOfBlock = Math.floor((fee * finderShare) / 10000);
+  const opsOfBlock = fee - finderOfBlock;
   el.innerHTML =
     `<strong>Fees:</strong> <strong>${bpsPct(fee)}</strong> of each block · ` +
-    `<strong>${bpsPct(finderShare)}</strong> of that fee → previous finder on the <em>next</em> block ` +
-    `(highlighted <span class="kind-finder-inline" title="Pickaxe + trophy">⛏️🏆</span> line) · ` +
+    `<strong>${bpsPct(finderShare)}</strong> of that fee → previous finder on the <em>next</em> block · ` +
     `ops keep <strong>${bpsPct(opsOfBlock)}</strong> of the block.<br />` +
     `${windowLabel}. <strong>Payout weight</strong> = sum of share difficulties (work), not share count. ` +
     `<strong>~H/s</strong> is estimated from recent work.`;
@@ -331,18 +356,10 @@ function finderBonusSats(rewardEst) {
 
 function kindCell(o, rewardEst) {
   const k = (o && o.kind) || "—";
-  if (k === "tides+finder") {
-    const bonus = finderBonusSats(rewardEst);
-    const tip =
-      bonus > 0
-        ? `Work share + previous-finder bonus · finder reward ~${fmtBtc(bonus)} (${fmtBtcTitle(bonus)})`
-        : "Work share + previous-finder bonus (see fee footnote)";
-    return `<span class="kind-ico kind-finder" title="${escapeHtml(tip)}" aria-label="Mining + finder bonus">${KIND_ICO.pickaxe}${KIND_ICO.trophy}</span>`;
-  }
+  // tides+finder is shown as plain mining share — finder bonuses are off-coinbase (ops manual).
   if (k === "ops") {
     return `<span class="kind-ico kind-ops" title="Pool ops fee keep (see fee footnote)" aria-label="Ops fee">${KIND_ICO.ops}</span>`;
   }
-  // Regular window work share
   return `<span class="kind-ico kind-tides" title="TIDES window work share" aria-label="Mining share">${KIND_ICO.pickaxe}</span>`;
 }
 
@@ -353,36 +370,55 @@ const KIND_ICO = {
   ops: "⚙️",
 };
 
+const COINBASER_TOP_N = 12;
+let coinbaserExpanded = false;
+let coinbaserLast = null;
+let contribShowAll = false;
+let contribLast = null;
+
+function isContribLive(c) {
+  return (
+    (c && c.activity === "live") ||
+    (c && Number(c.hashrate_hs || 0) > 0)
+  );
+}
+
 function renderCoinbaser(coinbaser) {
   const cbBody = document.getElementById("coinbaserBody");
   const cbNote = document.getElementById("coinbaserNote");
+  const more = document.getElementById("coinbaserMore");
   if (!cbBody) return;
   if (!coinbaser) {
     cbBody.innerHTML = `<tr><td colspan="5" class="muted">Failed to load /api/coinbaser</td></tr>`;
     if (cbNote) cbNote.textContent = "Coinbaser unavailable";
+    if (more) {
+      more.hidden = true;
+      more.innerHTML = "";
+    }
     return;
   }
+  coinbaserLast = coinbaser;
   const outs = coinbaser.outputs || [];
-  const finderOut = outs.find((o) => o.kind === "tides+finder");
-  const bonus = finderBonusSats(coinbaser.reward_sats_estimate);
   if (cbNote) {
-    let note = outs.length
+    const note = outs.length
       ? `~${fmtBtc(coinbaser.reward_sats_estimate)} total · ${outs.length} line(s) · window work ${fmtInt(coinbaser.window_work)}`
-      : `No miner lines yet (~${fmtBtc(coinbaser.reward_sats_estimate)}) — empty window pays ops only`;
-    if (finderOut && bonus > 0) {
-      note += ` · ⛏️🏆 line includes ~${fmtBtc(bonus)} finder bonus`;
-    }
+      : `No miner lines yet (~${fmtBtc(coinbaser.reward_sats_estimate)}) — empty window`;
     cbNote.textContent = note;
   }
   if (!outs.length) {
-    cbBody.innerHTML = `<tr><td colspan="5" class="muted">No coinbaser outputs (empty window → ops only)</td></tr>`;
+    cbBody.innerHTML = `<tr><td colspan="5" class="muted">No coinbaser outputs (empty window)</td></tr>`;
+    if (more) {
+      more.hidden = true;
+      more.innerHTML = "";
+    }
     return;
   }
-  cbBody.innerHTML = outs
+  const hidden = Math.max(0, outs.length - COINBASER_TOP_N);
+  const show = coinbaserExpanded || hidden === 0 ? outs : outs.slice(0, COINBASER_TOP_N);
+  cbBody.innerHTML = show
     .map((o) => {
       let rowClass = "";
-      if (o.kind === "tides+finder") rowClass = ' class="row-finder"';
-      else if (o.kind === "ops") rowClass = ' class="row-ops"';
+      if (o.kind === "ops") rowClass = ' class="row-ops"';
       const worker = (o.name || "").trim();
       const nick = (o.nickname || "").trim();
       return `<tr${rowClass}>
@@ -394,6 +430,85 @@ function renderCoinbaser(coinbaser) {
     </tr>`;
     })
     .join("");
+  if (more) {
+    if (hidden === 0) {
+      more.hidden = true;
+      more.innerHTML = "";
+    } else {
+      more.hidden = false;
+      more.innerHTML = coinbaserExpanded
+        ? `<button type="button" id="coinbaserToggle">Show top ${COINBASER_TOP_N} only</button>`
+        : `<button type="button" id="coinbaserToggle">Show ${hidden} more line${hidden === 1 ? "" : "s"}</button>`;
+      const btn = document.getElementById("coinbaserToggle");
+      if (btn && !btn.dataset.wired) {
+        btn.dataset.wired = "1";
+        btn.addEventListener("click", () => {
+          coinbaserExpanded = !coinbaserExpanded;
+          if (coinbaserLast) renderCoinbaser(coinbaserLast);
+        });
+      } else if (btn) {
+        btn.onclick = () => {
+          coinbaserExpanded = !coinbaserExpanded;
+          if (coinbaserLast) renderCoinbaser(coinbaserLast);
+        };
+      }
+    }
+  }
+}
+
+function renderContributors(contrib) {
+  const cbody = document.getElementById("contribBody");
+  const more = document.getElementById("contribMore");
+  if (!cbody) return;
+  contribLast = Array.isArray(contrib) ? contrib : [];
+  if (!contribLast.length) {
+    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
+    if (more) {
+      more.hidden = true;
+      more.innerHTML = "";
+    }
+    return;
+  }
+  const live = contribLast.filter(isContribLive);
+  const restN = contribLast.length - live.length;
+  const rows = contribShowAll || restN <= 0 ? contribLast : live;
+  // Keep original rank numbers from full list
+  const rank = new Map(contribLast.map((c, i) => [c.address, i + 1]));
+  cbody.innerHTML = rows
+    .map((c) => {
+      const i = rank.get(c.address) || 0;
+      return `<tr>
+        <td class="activity-cell">${activityDot(c)}</td>
+        <td>${i}</td>
+        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
+        ${clipCell(c.nickname, { title: c.nickname ? `Nickname: ${c.nickname}` : "", wide: true })}
+        <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
+        <td title="${lastShareTitle(c)}">${lastShareLabel(c)}</td>
+        <td title="Work since last confirmed pool find (unfinished current block)">${fmtInt(c.work_current ?? 0)}</td>
+        <td title="Total work in payout window only (7 confirmed + current) — not lifetime">${fmtInt(c.work)}</td>
+        <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
+        <td title="Your total window work ÷ window work">${Number(c.share_pct || 0).toFixed(2)}%</td>
+      </tr>`;
+    })
+    .join("");
+  if (more) {
+    if (restN <= 0) {
+      more.hidden = true;
+      more.innerHTML = "";
+    } else {
+      more.hidden = false;
+      more.innerHTML = contribShowAll
+        ? `<button type="button" id="contribToggle">Show hashing now only (${live.length})</button>`
+        : `<button type="button" id="contribToggle">Show all ${contribLast.length} in window (+${restN} idle/offline)</button>`;
+      const btn = document.getElementById("contribToggle");
+      if (btn) {
+        btn.onclick = () => {
+          contribShowAll = !contribShowAll;
+          renderContributors(contribLast);
+        };
+      }
+    }
+  }
 }
 
 function ageFromAt(iso) {
@@ -640,8 +755,8 @@ async function loadPoolChart(range) {
   if (!canvas) return;
   const data = await jget("/api/charts/pool?range=" + encodeURIComponent(range || "24h"));
   const poolMax = hsAxisMax([data.pool]);
-  // Fixed network axis 0–4 PH/s — auto-zoom (~2.75–3.2) made the line look flat.
-  const NET_AXIS_MAX_HS = 4e15;
+  // Fixed network axis 0–5 PH/s — auto-zoom (~2.75–3.2) made the line look flat.
+  const NET_AXIS_MAX_HS = 5e15;
   const findsIn = blockScatter(data.blocks, poolMax, { inWindowOnly: true });
   const findsOut = blockScatter(data.blocks, poolMax, { inWindowOnly: false });
   const win = data.window || null;
@@ -793,11 +908,11 @@ async function loadPoolChart(range) {
         },
         yPool: {
           position: "left",
-          title: { display: true, text: "Pool", color: "#3dd6c6" },
+          title: { display: true, text: "Pool (TH/s)", color: "#3dd6c6" },
           ticks: {
             color: "#3dd6c6",
             callback(v) {
-              return fmtHashrate(v);
+              return fmtAxisTH(v);
             },
           },
           grid: { color: "rgba(36,48,73,0.55)" },
@@ -810,8 +925,9 @@ async function loadPoolChart(range) {
           max: NET_AXIS_MAX_HS,
           ticks: {
             color: "#6ea8ff",
+            stepSize: 1e15,
             callback(v) {
-              return fmtHashratePH(v);
+              return fmtAxisPH(v);
             },
           },
           grid: { drawOnChartArea: false },
@@ -942,11 +1058,11 @@ async function loadUserChart(address, range) {
         },
         yPool: {
           position: "left",
-          title: { display: true, text: "TH/s", color: "#8b9bb8" },
+          title: { display: true, text: "Your HR (TH/s)", color: "#8b9bb8" },
           ticks: {
             color: "#8b9bb8",
             callback(v) {
-              return fmtHashrateTH(v);
+              return fmtAxisTH(v);
             },
           },
           grid: { color: "rgba(36,48,73,0.55)" },
@@ -1040,29 +1156,7 @@ async function loadPool() {
   ].join("");
   renderFeeFootnote(stats);
 
-  const cbody = document.getElementById("contribBody");
-  if (cbody && !contrib.length) {
-    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
-  } else if (cbody) {
-    // Luck % column hidden for now — per-addr finder luck in a short window is
-    // misleading (tiny work + a find → huge %; big hashrate + 0 finds → —).
-    cbody.innerHTML = contrib
-      .map(
-        (c, i) => `<tr>
-        <td class="activity-cell">${activityDot(c)}</td>
-        <td>${i + 1}</td>
-        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
-        ${clipCell(c.nickname, { title: c.nickname ? `Nickname: ${c.nickname}` : "", wide: true })}
-        <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
-        <td title="${lastShareTitle(c)}">${lastShareLabel(c)}</td>
-        <td title="Work since last confirmed pool find (unfinished current block)">${fmtInt(c.work_current ?? 0)}</td>
-        <td title="Total work in payout window only (7 confirmed + current) — not lifetime">${fmtInt(c.work)}</td>
-        <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
-        <td title="Your total window work ÷ window work">${Number(c.share_pct || 0).toFixed(2)}%</td>
-      </tr>`
-      )
-      .join("");
-  }
+  renderContributors(contrib);
 
   renderBlocksTable(blocks, "blocksBody", info);
 
@@ -1317,7 +1411,7 @@ async function loadUser(address) {
     card("Work in window", fmtInt(user.work_in_window)),
     card(
       "Est. next block payout",
-      `<span title="${fmtBtcTitle((user.estimated_next_sats || 0) + (user.pending_finder_credit_sats || 0))} — tides share + finder bonus if yours">${fmtBtc((user.estimated_next_sats || 0) + (user.pending_finder_credit_sats || 0))}</span>`
+      `<span title="${fmtBtcTitle(user.estimated_next_sats || 0)} — your tides window share (finder bonuses are paid manually by ops, not in coinbase)">${fmtBtc(user.estimated_next_sats || 0)}</span>`
     ),
     card("Workers", user.workers.length ? user.workers.join(", ") : "—", true),
     card("Window size", fmtInt(stats.window_work_target) + " @ diff " + fmtInt(stats.block_difficulty)),

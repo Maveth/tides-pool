@@ -1,6 +1,6 @@
 # tides-pool design (v1)
 
-See also the approved session plan. This file is the in-repo summary.
+In-repo summary. **Live join / fee policy / ports:** see root `README.md` (mainnet Blake2b / RIPTIDE). Early sections below still describe the original TN4 lab math.
 
 ## Responsibility split
 
@@ -8,35 +8,39 @@ See also the approved session plan. This file is the in-repo summary.
 |-------|------|
 | Miner DATUM Gateway + local node | Templates, tx selection, local share pre-check |
 | tides-pool | Share log, TIDES, coinbase **suggestions**, share accept/reject |
-| knots-pool (dedicated) | Watch our blocks; hold ops fee keys only |
+| knots / ops wallet | Watch pool blocks; hold ops fee keys only |
 
 ## TIDES
 
-- Append-only share log; each share contributes `work = share_difficulty`.
-- On pool block with difficulty `D`: window = `min(8 * D, total_work)`.
-- Walk backward from **job-issue share-log head** (not wall-clock find time).
-- Split `R = subsidy + fees` by work share; apply fee flags; floor to sats.
+- Append-only share log; each share contributes `work = share_difficulty` (Diff1 units).
+- **Live window mode:** last **N pool finds** (default `window_blocks=8` → **7 confirmed + current**), cutoff = share head of the Nth-last confirmed find (orphans excluded).
+- Legacy ocean-style `min(8 * D, total_work)` walk is lab-only / not used for live payouts.
+- Split block reward by work share; apply fee settings; floor to sats.
 
 ## Fee / finder
 
+Configured by `TIDES_FEE_BPS` and `TIDES_FINDER_FEE_SHARE_BPS` (not hard-coded).
+
 ```text
-R = block reward
-TIDES miners : 0.90 R   (in coinbase of N, suggested before find)
-Finder credit: 0.08 R   (owed to finder of N; paid in N+1… suggestions)
-Pool ops     : 0.02 R   (in coinbase of N)
+Example when fee_bps=500 and finder_fee_share_bps=8000:
+  R = block reward
+  TIDES miners : ~0.95 R   (window work)
+  Finder credit: ~0.04 R   (prior finder; next coinbase)
+  Pool ops     : ~0.01 R
+
+When fee_bps=0 (common live):
+  coinbase = 100% window work; no ops line; no in-coinbase finder bonus
+  (any finder thank-you is manual / off-chain)
 ```
 
-## Live lab wiring (NAS)
+## Live wiring (NAS / mainnet)
 
 | Piece | Detail |
 |-------|--------|
-| RC3 Knots | `bip110-knots-testnet4` RPC `192.168.0.143:48332` — tides-pool syncs tip/diff every ~15s |
-| Pool UI | `http://192.168.0.143:8088/` |
-| Solo DATUM (unchanged) | `:23335` / API `:7154` → `mqMY6…` (maveth_tn4) |
-| **DATUM2 (pool gateway)** | `:23336` / API `:7155` → **`mfh5aSGhAWyJ2cv8vU2S1jZ1bujwEizRV3`** |
-| Wallet backup | `O:\bip110minner\wallets\tides_pool_tn4\` (separate from maveth) |
-
-**DATUM Prime (encrypted `pool_host` protocol)** is still required before DATUM2 can send shares / get TIDES coinbase splits from tides-pool. Until then DATUM2 runs **non-pooled** (100% to ops address) but is ready for `pool_host=127.0.0.1:28916` once Prime is implemented.
+| Public UI | https://tides.maveth.ca/ (`:8088` on NAS) |
+| Prime | `tides.maveth.ca:28916` (`deploy-tides-prime-1`) |
+| Split | `TIDES_ROLE=web|prime` — UI restart must not bounce Gateways |
+| Knots | NAS mainnet node (RPC LAN-only); Windows RC4 also runs for ops wallets |
 
 ## Website (v1 — in scope)
 

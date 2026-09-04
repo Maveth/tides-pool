@@ -207,6 +207,22 @@ h2 { margin: 1.25rem 0 0.65rem; font-size: 1.1rem; }
   border-radius: 12px;
   background: var(--panel);
 }
+.table-more {
+  margin: 0.45rem 0 0;
+  font-size: 0.88rem;
+}
+.table-more button {
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  color: var(--accent, #3dd6c6);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  font: inherit;
+}
+.table-more button:hover {
+  background: rgba(61, 214, 198, 0.1);
+}
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { padding: 0.55rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }

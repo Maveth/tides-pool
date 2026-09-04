@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260904noluck" />
+  <link rel="stylesheet" href="/static/style.css?v=20260904collapse" />
 </head>
 <body>
   <header class="top">
@@ -129,11 +129,12 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th title="⛏️ mining share · ⛏️🏆 mining + finder bonus · ⚙️ ops fee">Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
+              <tr><th title="⛏️ mining / window work share · ⚙️ ops fee (if any)">Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
             </thead>
-            <tbody id="coinbaserBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+            <tbody id="coinbaserBody"><tr><td colspan="5">Loading…</td></tr></tbody>
           </table>
         </div>
+        <p class="table-more muted" id="coinbaserMore" hidden></p>
       </div>
 
       <div class="stack-panels">
@@ -144,6 +145,7 @@
             <span class="activity-dot live" title="Shares in the last ~10 minutes"></span> hashing now
             <span class="activity-dot idle" title="Work on this block, but quiet lately"></span> this block, idle
             <span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span> no work this block
+            <span class="muted">· default = hashing now</span>
           </p>
           <div class="table-wrap">
             <table>
@@ -164,6 +166,7 @@
               <tbody id="contribBody"><tr><td colspan="10">Loading…</td></tr></tbody>
             </table>
           </div>
+          <p class="table-more muted" id="contribMore" hidden></p>
         </div>
         <div class="recent-blocks-panel">
           <h2>Recent pool blocks <span class="muted" style="font-weight:400;font-size:0.9rem">(last 8 · orphans shown in red)</span></h2>
@@ -237,7 +240,7 @@
       <details class="miner-panel" id="payoutHistoryPanel">
         <summary>
           <span class="connect-title">Payout history</span>
-          <span class="muted connect-hint" id="payoutHistoryHint">TIDES share + finder bonuses · click to expand</span>
+          <span class="muted connect-hint" id="payoutHistoryHint">TIDES share lines · click to expand</span>
         </summary>
         <div class="miner-panel-body">
           <p class="muted chart-sub">Reconstructed from pool finds (same math as Total earned). Newest first.</p>
@@ -282,6 +285,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260904noluck" defer></script>
+  <script src="/static/app.js?v=20260904collapse" defer></script>
 </body>
 </html>
