@@ -506,22 +506,46 @@ class MemoryStore(Store):
         manual_payout_done: bool = False,
         manual_payout_note: str | None = None,
     ) -> None:
-        self._blocks = [b for b in self._blocks if b.height != height]
         head = share_head_seq if share_head_seq is not None else self._seq
+        existing = next((b for b in self._blocks if b.height == height), None)
+        if existing and existing.status in ("confirmed", "orphaned", "misattributed"):
+            return
+        # Freeze first finder while pending — later is_block claims must not steal it.
+        frozen_finder = finder_address
+        keep_snap = intended_payout_json
+        keep_note = manual_payout_note
+        keep_mode = payout_mode or "onchain_split"
+        if existing and existing.status == "pending":
+            if (existing.finder_address or "").strip():
+                frozen_finder = existing.finder_address
+            if existing.intended_payout_json and not keep_snap:
+                keep_snap = existing.intended_payout_json
+            if existing.manual_payout_note and not keep_note:
+                keep_note = existing.manual_payout_note
+            if existing.payout_mode == "ops_manual":
+                keep_mode = "ops_manual"
+            # Keep real hex hash over synthetic pool-…
+            if (
+                existing.block_hash
+                and not str(existing.block_hash).startswith("pool-")
+                and str(block_hash).startswith("pool-")
+            ):
+                block_hash = existing.block_hash
+        self._blocks = [b for b in self._blocks if b.height != height]
         self._blocks.append(
             BlockRow(
                 height=height,
                 block_hash=block_hash,
                 difficulty=difficulty,
                 reward_sats=reward_sats,
-                finder_address=finder_address,
+                finder_address=frozen_finder,
                 accounted_at=datetime.now(timezone.utc),
                 status=status,
                 share_head_seq=head,
-                payout_mode=payout_mode or "onchain_split",
+                payout_mode=keep_mode,
                 manual_payout_done=bool(manual_payout_done),
-                manual_payout_note=manual_payout_note,
-                intended_payout_json=intended_payout_json,
+                manual_payout_note=keep_note,
+                intended_payout_json=keep_snap,
             )
         )
         self._blocks.sort(key=lambda b: b.height, reverse=True)
@@ -722,6 +746,9 @@ class MemoryStore(Store):
         return self._meta.get(key, default)
 
     async def open_finder_credit(self, height: int, address: str, credit_sats: int) -> None:
+        # One credit row per find height (first claimer wins).
+        if any(c[0] == height for c in self._credits):
+            return
         self._credits.append((height, address, credit_sats, None))
 
     async def pending_finder_credit(self) -> tuple[str | None, int]:
@@ -1409,8 +1436,12 @@ class PostgresStore(Store):
                     VALUES($1, $2, $3, $4, $5, $6, $7, NULL, NULL, $8, $9, $10, $11)
                     ON CONFLICT (height) DO UPDATE SET
                       block_hash = CASE
-                        WHEN blocks.status = 'pending' THEN EXCLUDED.block_hash
-                        ELSE blocks.block_hash END,
+                        WHEN blocks.status <> 'pending' THEN blocks.block_hash
+                        WHEN blocks.block_hash IS NOT NULL
+                         AND blocks.block_hash NOT LIKE 'pool-%%'
+                         AND EXCLUDED.block_hash LIKE 'pool-%%'
+                        THEN blocks.block_hash
+                        ELSE EXCLUDED.block_hash END,
                       difficulty = CASE
                         WHEN blocks.status = 'pending' THEN EXCLUDED.difficulty
                         ELSE blocks.difficulty END,
@@ -1418,8 +1449,9 @@ class PostgresStore(Store):
                         WHEN blocks.status = 'pending' THEN EXCLUDED.reward_sats
                         ELSE blocks.reward_sats END,
                       finder_address = CASE
-                        WHEN blocks.status = 'pending' THEN EXCLUDED.finder_address
-                        ELSE blocks.finder_address END,
+                        WHEN blocks.status <> 'pending' THEN blocks.finder_address
+                        WHEN COALESCE(blocks.finder_address, '') <> '' THEN blocks.finder_address
+                        ELSE EXCLUDED.finder_address END,
                       share_head_seq = CASE
                         WHEN blocks.status = 'pending' THEN EXCLUDED.share_head_seq
                         ELSE blocks.share_head_seq END,
@@ -1430,16 +1462,23 @@ class PostgresStore(Store):
                         WHEN blocks.status = 'pending' THEN now()
                         ELSE blocks.accounted_at END,
                       payout_mode = CASE
-                        WHEN blocks.status = 'pending' THEN EXCLUDED.payout_mode
-                        ELSE blocks.payout_mode END,
+                        WHEN blocks.status <> 'pending' THEN blocks.payout_mode
+                        WHEN blocks.payout_mode = 'ops_manual' THEN blocks.payout_mode
+                        ELSE EXCLUDED.payout_mode END,
                       intended_payout_json = CASE
-                        WHEN blocks.status = 'pending'
-                         AND EXCLUDED.intended_payout_json IS NOT NULL
+                        WHEN blocks.status <> 'pending' THEN blocks.intended_payout_json
+                        WHEN blocks.intended_payout_json IS NOT NULL
+                         AND EXCLUDED.intended_payout_json IS NULL
+                        THEN blocks.intended_payout_json
+                        WHEN EXCLUDED.intended_payout_json IS NOT NULL
                         THEN EXCLUDED.intended_payout_json
                         ELSE blocks.intended_payout_json END,
                       manual_payout_note = CASE
-                        WHEN blocks.status = 'pending'
-                         AND EXCLUDED.manual_payout_note IS NOT NULL
+                        WHEN blocks.status <> 'pending' THEN blocks.manual_payout_note
+                        WHEN blocks.manual_payout_note IS NOT NULL
+                         AND EXCLUDED.manual_payout_note IS NULL
+                        THEN blocks.manual_payout_note
+                        WHEN EXCLUDED.manual_payout_note IS NOT NULL
                         THEN EXCLUDED.manual_payout_note
                         ELSE blocks.manual_payout_note END
                     """,
@@ -1828,10 +1867,14 @@ class PostgresStore(Store):
         return default if val is None else str(val)
 
     async def open_finder_credit(self, height: int, address: str, credit_sats: int) -> None:
+        # One credit per find height — first claimer wins (no stacked bonuses).
         await self._p().execute(
             """
             INSERT INTO finder_credits(from_height, address, credit_sats)
-            VALUES($1, $2, $3)
+            SELECT $1, $2, $3
+            WHERE NOT EXISTS (
+              SELECT 1 FROM finder_credits WHERE from_height = $1
+            )
             """,
             height,
             address,

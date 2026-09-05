@@ -10,6 +10,7 @@ from typing import Any
 
 from tides_pool.bitcoin_rpc import BitcoinRPC, BitcoinRPCError
 from tides_pool.config import Settings, miner_reward_bps
+from tides_pool.payment_verify import block_intended_to_map, diff_payments
 from tides_pool.store import Store
 from tides_pool.tides import coinbase_suggestion, split_reward
 
@@ -48,11 +49,16 @@ def coinbase_value_sats(block: dict[str, Any]) -> int | None:
 
 def coinbase_payout_addresses(block: dict[str, Any]) -> list[str]:
     """Value-bearing payout addresses from getblock verbosity=2 coinbase."""
+    return list(coinbase_payout_map(block).keys())
+
+
+def coinbase_payout_map(block: dict[str, Any]) -> dict[str, int]:
+    """Address → sats from getblock verbosity=2 coinbase (sums duplicate addrs)."""
     try:
         tx0 = block["tx"][0]
     except (KeyError, IndexError, TypeError):
-        return []
-    addrs: list[str] = []
+        return {}
+    out: dict[str, int] = {}
     for o in tx0.get("vout") or []:
         try:
             val = o.get("valueSat")
@@ -65,11 +71,18 @@ def coinbase_payout_addresses(block: dict[str, Any]) -> list[str]:
         if val <= 0:
             continue
         spk = o.get("scriptPubKey") or {}
+        addrs: list[str] = []
         if spk.get("address"):
             addrs.append(str(spk["address"]))
         for a in spk.get("addresses") or []:
             addrs.append(str(a))
-    return addrs
+        if not addrs:
+            continue
+        # Unusual multi-address vout: attribute full value to first
+        a0 = addrs[0].strip()
+        if a0:
+            out[a0] = out.get(a0, 0) + int(val)
+    return out
 
 
 def coinbase_ascii(block: dict[str, Any]) -> str:
@@ -223,7 +236,11 @@ async def build_intended_payout_snapshot(
     reward_sats: int,
     share_head_seq: int | None,
 ) -> str:
-    """Freeze who *should* have been paid (window at find) for ops_manual finds."""
+    """Freeze who *should* have been paid (window at find) for confirm-time audit.
+
+    Call **before** opening this find's finder_credit so pending credit is still
+    the prior finder bonus that belonged in this coinbase.
+    """
     cutoff = await store.payout_window_cutoff_seq(settings.window_blocks)
     shares = await store.list_shares_after_cutoff(cutoff)
     if share_head_seq is not None:
@@ -262,6 +279,82 @@ async def build_intended_payout_snapshot(
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
     return json.dumps(payload, separators=(",", ":"))
+
+
+async def apply_confirm_payout_checks(
+    store: Store,
+    settings: Settings,
+    *,
+    height: int,
+    blk: dict[str, Any],
+    existing_snap: str | None,
+    existing_note: str | None,
+    share_head_seq: int | None,
+    finder_address: str | None,
+    reward_fallback: int,
+) -> str:
+    """At confirm: refresh reward, ensure snapshot, compare chain vs intended.
+
+    Returns final payout_mode. On intended≠chain (material), fail closed to
+    ``ops_manual`` so the window still advances but UI flags manual payout.
+    """
+    actual = coinbase_value_sats(blk)
+    if actual and actual != int(reward_fallback or 0):
+        await store.update_block_reward(int(height), actual)
+        log.info(
+            "block %s reward corrected %s → %s (incl fees)",
+            height,
+            reward_fallback,
+            actual,
+        )
+    reward_now = int(actual or reward_fallback or 0)
+
+    nick = extract_secondary_tag(coinbase_ascii(blk), settings.coinbase_tag_primary)
+    if nick and finder_address:
+        try:
+            await store.set_address_nickname(str(finder_address), nick)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("nickname save failed: %s", exc)
+
+    mode = pool_coinbase_payout_mode(
+        blk,
+        tag_primary=settings.coinbase_tag_primary,
+        ops_address=settings.pool_ops_address,
+    ) or "onchain_split"
+
+    snap = existing_snap
+    if not snap:
+        try:
+            snap = await build_intended_payout_snapshot(
+                store,
+                settings,
+                reward_sats=reward_now,
+                share_head_seq=share_head_seq,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("intended payout snapshot failed: %s", exc)
+            snap = None
+
+    note = existing_note
+    if mode == "ops_manual":
+        note = note or "Coinbase was ops-only; ops will pay miners manually"
+    elif snap and mode == "onchain_split":
+        listed = block_intended_to_map(snap)
+        chain = coinbase_payout_map(blk)
+        # Ignore dust-level rounding; flag real payee/amount divergence.
+        d = diff_payments(listed, chain, dust_ignore=1000)
+        if not d.ok:
+            mode = "ops_manual"
+            note = f"coinbase≠intended at confirm: {d.summary()}"
+            log.warning("block %s %s", height, note)
+
+    await store.set_block_payout_meta(
+        int(height),
+        payout_mode=mode,
+        intended_payout_json=snap,
+        manual_payout_note=note,
+    )
+    return mode
 
 
 def resolve_tides_block_near_height(
@@ -342,55 +435,22 @@ async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
         )
 
         if not synthetic and canonical == our_hash and ours_at_height:
-            # Refresh reward from chain (subsidy + fees) — find-time estimate is often subsidy-only
-            mode = None
+            mode = "onchain_split"
             if blk is not None:
-                mode = pool_coinbase_payout_mode(
-                    blk,
-                    tag_primary=settings.coinbase_tag_primary,
-                    ops_address=settings.pool_ops_address,
+                mode = await apply_confirm_payout_checks(
+                    store,
+                    settings,
+                    height=int(b.height),
+                    blk=blk,
+                    existing_snap=b.intended_payout_json,
+                    existing_note=b.manual_payout_note,
+                    share_head_seq=b.share_head_seq,
+                    finder_address=b.finder_address,
+                    reward_fallback=int(b.reward_sats or 0),
                 )
-                actual = coinbase_value_sats(blk)
-                if actual and actual != int(b.reward_sats or 0):
-                    await store.update_block_reward(int(b.height), actual)
-                    log.info(
-                        "block %s reward corrected %s → %s (incl fees)",
-                        b.height,
-                        b.reward_sats,
-                        actual,
-                    )
-                nick = extract_secondary_tag(
-                    coinbase_ascii(blk), settings.coinbase_tag_primary
-                )
-                if nick and b.finder_address:
-                    try:
-                        await store.set_address_nickname(str(b.finder_address), nick)
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("nickname save failed: %s", exc)
                 if mode == "ops_manual":
-                    snap = b.intended_payout_json
-                    if not snap:
-                        try:
-                            snap = await build_intended_payout_snapshot(
-                                store,
-                                settings,
-                                reward_sats=int(actual or b.reward_sats or 0),
-                                share_head_seq=b.share_head_seq,
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("intended payout snapshot failed: %s", exc)
-                            snap = None
-                    await store.set_block_payout_meta(
-                        int(b.height),
-                        payout_mode="ops_manual",
-                        intended_payout_json=snap,
-                        manual_payout_note=(
-                            b.manual_payout_note
-                            or "Coinbase was ops-only; ops will pay miners manually"
-                        ),
-                    )
                     log.warning(
-                        "block %s confirmed ops_manual (ops-only coinbase) hash=%s",
+                        "block %s confirmed ops_manual hash=%s",
                         b.height,
                         our_hash[:16],
                     )
@@ -433,36 +493,17 @@ async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
                 )
             elif new_h == b.height and new_hash == our_hash:
                 if new_blk is not None:
-                    actual = coinbase_value_sats(new_blk)
-                    if actual and actual != int(b.reward_sats or 0):
-                        await store.update_block_reward(int(b.height), actual)
-                    mode = pool_coinbase_payout_mode(
-                        new_blk,
-                        tag_primary=settings.coinbase_tag_primary,
-                        ops_address=settings.pool_ops_address,
+                    await apply_confirm_payout_checks(
+                        store,
+                        settings,
+                        height=int(b.height),
+                        blk=new_blk,
+                        existing_snap=b.intended_payout_json,
+                        existing_note=b.manual_payout_note,
+                        share_head_seq=b.share_head_seq,
+                        finder_address=b.finder_address,
+                        reward_fallback=int(b.reward_sats or 0),
                     )
-                    if mode == "ops_manual":
-                        snap = b.intended_payout_json
-                        if not snap:
-                            try:
-                                snap = await build_intended_payout_snapshot(
-                                    store,
-                                    settings,
-                                    reward_sats=int(actual or b.reward_sats or 0),
-                                    share_head_seq=b.share_head_seq,
-                                )
-                            except Exception as exc:  # noqa: BLE001
-                                log.warning("intended payout snapshot failed: %s", exc)
-                                snap = None
-                        await store.set_block_payout_meta(
-                            int(b.height),
-                            payout_mode="ops_manual",
-                            intended_payout_json=snap,
-                            manual_payout_note=(
-                                b.manual_payout_note
-                                or "Coinbase was ops-only; ops will pay miners manually"
-                            ),
-                        )
                 await store.set_block_status(b.height, "confirmed")
                 confirmed += 1
                 continue
@@ -476,39 +517,17 @@ async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
                     reason=reason,
                 )
                 if new_blk is not None:
-                    actual = coinbase_value_sats(new_blk)
-                    if actual:
-                        await store.update_block_reward(int(new_h), actual)
-                    nick = extract_secondary_tag(
-                        coinbase_ascii(new_blk), settings.coinbase_tag_primary
+                    await apply_confirm_payout_checks(
+                        store,
+                        settings,
+                        height=int(new_h),
+                        blk=new_blk,
+                        existing_snap=b.intended_payout_json,
+                        existing_note=None,
+                        share_head_seq=b.share_head_seq,
+                        finder_address=b.finder_address,
+                        reward_fallback=int(b.reward_sats or 0),
                     )
-                    if nick and b.finder_address:
-                        try:
-                            await store.set_address_nickname(str(b.finder_address), nick)
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("nickname save failed: %s", exc)
-                    mode = pool_coinbase_payout_mode(
-                        new_blk,
-                        tag_primary=settings.coinbase_tag_primary,
-                        ops_address=settings.pool_ops_address,
-                    )
-                    if mode == "ops_manual":
-                        try:
-                            snap = await build_intended_payout_snapshot(
-                                store,
-                                settings,
-                                reward_sats=int(actual or b.reward_sats or 0),
-                                share_head_seq=b.share_head_seq,
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("intended payout snapshot failed: %s", exc)
-                            snap = None
-                        await store.set_block_payout_meta(
-                            int(new_h),
-                            payout_mode="ops_manual",
-                            intended_payout_json=snap,
-                            manual_payout_note="Coinbase was ops-only; ops will pay miners manually",
-                        )
                 fixed += 1
                 log.warning(
                     "block reassigned %s → %s hash=%s (%s)",

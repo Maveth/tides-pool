@@ -1254,15 +1254,16 @@ class DatumPrimeSession:
                 payout_mode = mode
             if mode == "ops_manual":
                 manual_note = "Coinbase was ops-only; ops will pay miners manually"
-                try:
-                    intended_json = await build_intended_payout_snapshot(
-                        self.store,
-                        self.settings,
-                        reward_sats=int(reward_sats),
-                        share_head_seq=head_seq,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("intended payout snapshot failed: %s", exc)
+            # Snapshot BEFORE opening this find's credit (pending = prior finder bonus).
+            try:
+                intended_json = await build_intended_payout_snapshot(
+                    self.store,
+                    self.settings,
+                    reward_sats=int(reward_sats),
+                    share_head_seq=head_seq,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("intended payout snapshot failed: %s", exc)
         await self.store.record_block(
             height=resolved_height,
             block_hash=block_hash,
