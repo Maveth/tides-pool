@@ -62,11 +62,17 @@ _T = TypeVar("_T")
 
 
 class _TtlCache:
-    """Process-local TTL cache with single-flight refresh (web role dashboard APIs)."""
+    """Process-local TTL cache with single-flight + stale-while-revalidate.
+
+    Fresh hit → return immediately.
+    Expired but we have a last value → return last refresh now, refresh in background.
+    Cold (never cached) → await factory once (single-flight).
+    """
 
     def __init__(self) -> None:
-        self._items: dict[str, tuple[float, Any]] = {}
+        self._items: dict[str, tuple[float, Any]] = {}  # expires_at, value
         self._locks: dict[str, asyncio.Lock] = {}
+        self._inflight: dict[str, asyncio.Task[Any]] = {}
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -75,6 +81,29 @@ class _TtlCache:
             self._locks[key] = lock
         return lock
 
+    def _kick_refresh(
+        self, key: str, ttl_sec: float, factory: Callable[[], Awaitable[_T]]
+    ) -> None:
+        t = self._inflight.get(key)
+        if t is not None and not t.done():
+            return
+
+        async def _run() -> None:
+            try:
+                async with self._lock_for(key):
+                    now = time.monotonic()
+                    hit = self._items.get(key)
+                    if hit is not None and hit[0] > now:
+                        return
+                    val = await factory()
+                    self._items[key] = (time.monotonic() + max(float(ttl_sec), 1.0), val)
+            except Exception:  # noqa: BLE001
+                log.exception("dash cache refresh failed key=%s", key)
+            finally:
+                self._inflight.pop(key, None)
+
+        self._inflight[key] = asyncio.create_task(_run())
+
     async def get_or_set(
         self, key: str, ttl_sec: float, factory: Callable[[], Awaitable[_T]]
     ) -> _T:
@@ -82,13 +111,19 @@ class _TtlCache:
         hit = self._items.get(key)
         if hit is not None and hit[0] > now:
             return hit[1]
+        if hit is not None:
+            # Stale-while-revalidate: never blank the UI waiting on a refresh.
+            self._kick_refresh(key, ttl_sec, factory)
+            return hit[1]
         async with self._lock_for(key):
             now = time.monotonic()
             hit = self._items.get(key)
-            if hit is not None and hit[0] > now:
+            if hit is not None:
+                if hit[0] <= now:
+                    self._kick_refresh(key, ttl_sec, factory)
                 return hit[1]
             val = await factory()
-            self._items[key] = (now + max(float(ttl_sec), 1.0), val)
+            self._items[key] = (time.monotonic() + max(float(ttl_sec), 1.0), val)
             return val
 
 
@@ -185,6 +220,28 @@ async def lifespan(_app: FastAPI):
     _sync_task = None
     if settings.runs_chain_sync():
         _sync_task = asyncio.create_task(chain_sync_loop(store, settings, _stop_sync))
+    # Web: pre-fill dashboard caches so first paint isn't a multi-second blank.
+    if settings.runs_web():
+
+        async def _warm_dash_cache() -> None:
+            await asyncio.sleep(0.3)
+            try:
+                await _dash_cache.get_or_set("stats", _STATS_TTL_SEC, _stats_uncached)
+                await _dash_cache.get_or_set(
+                    "contrib:50",
+                    _CONTRIB_TTL_SEC,
+                    lambda: _contributors_uncached(50),
+                )
+                await _dash_cache.get_or_set(
+                    "charts:pool:24h",
+                    _CHART_POOL_TTL_SEC,
+                    lambda: _charts_pool_uncached("24h"),
+                )
+                log.info("dash cache warmed (stats / contributors / charts)")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("dash cache warm failed: %s", exc)
+
+        asyncio.create_task(_warm_dash_cache())
     yield
     _stop_sync.set()
     if _sync_task:
