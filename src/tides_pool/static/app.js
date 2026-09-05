@@ -375,6 +375,7 @@ let coinbaserExpanded = false;
 let coinbaserLast = null;
 const CONTRIB_OPEN_KEY = "tides_contrib_worker_open";
 const CONTRIB_SORT_KEY = "tides_contrib_sort";
+const CONTRIB_GROUP_KEY = "tides_contrib_group";
 const CONTRIB_SHOW_ALL_KEY = "tides_contrib_show_all";
 const CONTRIB_NICK_OPEN_KEY = "tides_contrib_nick_open";
 const CONTRIB_SORT_OPTS = new Set([
@@ -386,15 +387,7 @@ const CONTRIB_SORT_OPTS = new Set([
   "hashrate",
   "pct",
 ]);
-const CONTRIB_SORT_LABELS = {
-  work: "Total work",
-  address: "Address",
-  nickname: "Nickname",
-  shares: "Shares",
-  this_block: "This block",
-  hashrate: "Hashrate",
-  pct: "Payout %",
-};
+const CONTRIB_GROUP_OPTS = new Set(["", "nickname"]);
 function loadContribWorkerOpen() {
   try {
     return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_OPEN_KEY) || "[]"));
@@ -423,32 +416,49 @@ function saveContribNickOpen(set) {
     /* ignore */
   }
 }
-function loadContribSortKeys() {
+function loadContribSort() {
   try {
-    const raw = sessionStorage.getItem(CONTRIB_SORT_KEY);
-    if (!raw) return ["work", "", ""];
-    // migrate old single-string value
-    if (raw[0] !== "[") {
-      const one = CONTRIB_SORT_OPTS.has(raw) ? raw : "work";
-      return [one, "", ""];
+    const raw = sessionStorage.getItem(CONTRIB_SORT_KEY) || "work";
+    // migrate old multi-key JSON → primary only
+    if (raw[0] === "[") {
+      const arr = JSON.parse(raw);
+      const first = Array.isArray(arr) ? arr.find((v) => CONTRIB_SORT_OPTS.has(v)) : null;
+      return first || "work";
     }
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return ["work", "", ""];
-    const keys = arr.map((v) => (CONTRIB_SORT_OPTS.has(v) ? v : "")).slice(0, 3);
-    while (keys.length < 3) keys.push("");
-    if (!keys[0]) keys[0] = "work";
-    // drop duplicates after primary
-    for (let i = 1; i < 3; i++) {
-      if (keys[i] && keys.slice(0, i).includes(keys[i])) keys[i] = "";
-    }
-    return keys;
+    return CONTRIB_SORT_OPTS.has(raw) ? raw : "work";
   } catch {
-    return ["work", "", ""];
+    return "work";
   }
 }
-function saveContribSortKeys(keys) {
+function saveContribSort(v) {
   try {
-    sessionStorage.setItem(CONTRIB_SORT_KEY, JSON.stringify(keys));
+    sessionStorage.setItem(CONTRIB_SORT_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+function loadContribGroup() {
+  try {
+    // Prefer new key; migrate "nickname primary sort" from old multi-sort → group
+    const g = sessionStorage.getItem(CONTRIB_GROUP_KEY);
+    if (g !== null) return CONTRIB_GROUP_OPTS.has(g) ? g : "";
+    const raw = sessionStorage.getItem(CONTRIB_SORT_KEY) || "";
+    if (raw[0] === "[") {
+      try {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr[0] === "nickname") return "nickname";
+      } catch {
+        /* ignore */
+      }
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+function saveContribGroup(v) {
+  try {
+    sessionStorage.setItem(CONTRIB_GROUP_KEY, v || "");
   } catch {
     /* ignore */
   }
@@ -469,13 +479,30 @@ function saveContribShowAll(on) {
 }
 let contribShowAll = loadContribShowAll();
 let contribLast = null;
-let contribSortKeys = loadContribSortKeys();
+let contribSort = loadContribSort();
+let contribGroup = loadContribGroup();
 let contribWorkerOpen = loadContribWorkerOpen();
 let contribNickOpen = loadContribNickOpen();
 
 function nickKey(c) {
   const n = ((c && c.nickname) || "").trim();
   return n || "\0"; // empty nick sorts / groups last
+}
+
+function metricContrib(c, mode) {
+  switch (mode) {
+    case "shares":
+      return Number(c.shares || 0);
+    case "this_block":
+      return Number(c.work_current || 0);
+    case "hashrate":
+      return Number(c.hashrate_hs || 0);
+    case "pct":
+      return Number(c.share_pct || 0);
+    case "work":
+    default:
+      return Number(c.work || 0);
+  }
 }
 
 function cmpContribByMode(a, b, mode) {
@@ -491,94 +518,73 @@ function cmpContribByMode(a, b, mode) {
       return cmpStr(ka === "\0" ? "" : ka, kb === "\0" ? "" : kb);
     }
     case "shares":
-      return Number(b.shares || 0) - Number(a.shares || 0);
     case "this_block":
-      return Number(b.work_current || 0) - Number(a.work_current || 0);
     case "hashrate":
-      return Number(b.hashrate_hs || 0) - Number(a.hashrate_hs || 0);
     case "pct":
-      return Number(b.share_pct || 0) - Number(a.share_pct || 0);
     case "work":
+      return metricContrib(b, mode) - metricContrib(a, mode);
     default:
-      return Number(b.work || 0) - Number(a.work || 0);
+      return metricContrib(b, "work") - metricContrib(a, "work");
   }
 }
 
-function sortContributors(list, keys) {
-  const modes = (keys || []).filter((m) => CONTRIB_SORT_OPTS.has(m));
-  if (!modes.length) modes.push("work");
+function sortContributors(list, mode) {
+  const m = CONTRIB_SORT_OPTS.has(mode) ? mode : "work";
   const rows = list.slice();
   rows.sort((a, b) => {
-    for (const m of modes) {
-      const c = cmpContribByMode(a, b, m);
-      if (c !== 0) return c;
-    }
+    const c = cmpContribByMode(a, b, m);
+    if (c !== 0) return c;
     return cmpContribByMode(a, b, "address");
   });
   return rows;
 }
 
-function fillContribSortSelect(sel, { allowEmpty, selected, exclude }) {
-  if (!sel) return;
-  const ex = new Set(exclude || []);
-  const cur = selected || "";
-  const opts = [];
-  if (allowEmpty) opts.push(`<option value="">—</option>`);
-  for (const k of [
-    "work",
-    "address",
-    "nickname",
-    "shares",
-    "this_block",
-    "hashrate",
-    "pct",
-  ]) {
-    if (ex.has(k) && k !== cur) continue;
-    opts.push(
-      `<option value="${k}"${k === cur ? " selected" : ""}>${CONTRIB_SORT_LABELS[k]}</option>`
-    );
+function groupMetric(members, mode) {
+  if (mode === "address" || mode === "nickname") {
+    return nickKey(members[0]);
   }
-  sel.innerHTML = opts.join("");
-  if (cur && CONTRIB_SORT_OPTS.has(cur)) sel.value = cur;
-  else if (allowEmpty) sel.value = "";
-  else sel.value = "work";
+  return members.reduce((s, c) => s + metricContrib(c, mode), 0);
+}
+
+function sortNickGroups(groups, mode) {
+  const m = CONTRIB_SORT_OPTS.has(mode) ? mode : "work";
+  const cmpStr = (x, y) => x.localeCompare(y, undefined, { sensitivity: "base" });
+  groups.sort((ga, gb) => {
+    if (m === "nickname" || m === "address") {
+      const ka = ga.key === "\0" ? "" : ga.key;
+      const kb = gb.key === "\0" ? "" : gb.key;
+      if (ga.key === "\0" && gb.key !== "\0") return 1;
+      if (gb.key === "\0" && ga.key !== "\0") return -1;
+      const c = cmpStr(ka, kb);
+      if (c !== 0) return c;
+    } else {
+      const d = groupMetric(gb.members, m) - groupMetric(ga.members, m);
+      if (d !== 0) return d;
+    }
+    return cmpStr(ga.key === "\0" ? "" : ga.key, gb.key === "\0" ? "" : gb.key);
+  });
+  for (const g of groups) {
+    g.members = sortContributors(g.members, m);
+  }
+  return groups;
 }
 
 function wireContribSortBar() {
-  const s1 = document.getElementById("contribSort1");
-  const s2 = document.getElementById("contribSort2");
-  const s3 = document.getElementById("contribSort3");
-  if (!s1 || s1.dataset.wired) return;
-  const refreshOptions = () => {
-    const [a, b, c] = contribSortKeys;
-    fillContribSortSelect(s1, { allowEmpty: false, selected: a || "work", exclude: [] });
-    fillContribSortSelect(s2, {
-      allowEmpty: true,
-      selected: b || "",
-      exclude: [a].filter(Boolean),
-    });
-    fillContribSortSelect(s3, {
-      allowEmpty: true,
-      selected: c || "",
-      exclude: [a, b].filter(Boolean),
-    });
-  };
+  const gSel = document.getElementById("contribGroup");
+  const sSel = document.getElementById("contribSort");
+  if (!gSel || !sSel || gSel.dataset.wired) return;
+  gSel.value = contribGroup || "";
+  sSel.value = CONTRIB_SORT_OPTS.has(contribSort) ? contribSort : "work";
   const onChange = () => {
-    const keys = [s1.value || "work", s2.value || "", s3.value || ""];
-    // clear dupes
-    for (let i = 1; i < 3; i++) {
-      if (keys[i] && keys.slice(0, i).includes(keys[i])) keys[i] = "";
-    }
-    contribSortKeys = keys;
-    saveContribSortKeys(keys);
-    refreshOptions();
+    contribGroup = gSel.value === "nickname" ? "nickname" : "";
+    contribSort = CONTRIB_SORT_OPTS.has(sSel.value) ? sSel.value : "work";
+    saveContribGroup(contribGroup);
+    saveContribSort(contribSort);
     renderContributors(contribLast);
   };
-  refreshOptions();
-  s1.addEventListener("change", onChange);
-  s2.addEventListener("change", onChange);
-  s3.addEventListener("change", onChange);
-  s1.dataset.wired = "1";
+  gSel.addEventListener("change", onChange);
+  sSel.addEventListener("change", onChange);
+  gSel.dataset.wired = "1";
 }
 
 function isContribLive(c) {
@@ -760,29 +766,42 @@ function renderContributors(contrib) {
   const live = contribLast.filter(isContribLive);
   const restN = contribLast.length - live.length;
   const showingAll = contribShowAll || restN <= 0;
-  // Sort control only when the full window list is visible
+  // Sort/group controls only when the full window list is visible
   if (sortBar) sortBar.hidden = !showingAll;
-  if (showingAll) wireContribSortBar();
+  if (showingAll) {
+    wireContribSortBar();
+    const gSel = document.getElementById("contribGroup");
+    const sSel = document.getElementById("contribSort");
+    if (gSel) gSel.value = contribGroup || "";
+    if (sSel) sSel.value = CONTRIB_SORT_OPTS.has(contribSort) ? contribSort : "work";
+  }
 
   const baseRows = showingAll ? contribLast : live;
-  const keys = showingAll ? contribSortKeys : ["work"];
-  const rows = sortContributors(baseRows, keys);
-  const primary = (keys.find((k) => CONTRIB_SORT_OPTS.has(k)) || "work");
-  // # = position in the currently displayed (sorted) list
+  const sortMode = showingAll ? contribSort : "work";
+  const groupMode = showingAll ? contribGroup : "";
   const parts = [];
   let displayIdx = 0;
 
-  if (showingAll && primary === "nickname") {
-    // Group consecutive same nickname; multi-member groups get a + header.
-    const groups = [];
-    for (const c of rows) {
+  if (groupMode === "nickname") {
+    // Group by nickname; sort groups (and members) by Sort-by metric (e.g. hashrate).
+    const byNick = new Map();
+    for (const c of baseRows) {
       const k = nickKey(c);
-      const last = groups[groups.length - 1];
-      if (last && last.key === k && k !== "\0") last.members.push(c);
-      else groups.push({ key: k, members: [c] });
+      if (!byNick.has(k)) byNick.set(k, []);
+      byNick.get(k).push(c);
     }
+    let groups = [...byNick.entries()].map(([key, members]) => ({ key, members }));
+    groups = sortNickGroups(groups, sortMode);
     for (const g of groups) {
-      if (g.members.length === 1) {
+      if (g.members.length === 1 || g.key === "\0") {
+        // Don't group empty nicknames together as one blob — list singly.
+        if (g.key === "\0") {
+          for (const c of g.members) {
+            displayIdx += 1;
+            parts.push(contribAddressRowHtml(c, displayIdx));
+          }
+          continue;
+        }
         displayIdx += 1;
         parts.push(contribAddressRowHtml(g.members[0], displayIdx));
         continue;
@@ -795,7 +814,7 @@ function renderContributors(contrib) {
       const totHs = g.members.reduce((s, c) => s + Number(c.hashrate_hs || 0), 0);
       const totPct = g.members.reduce((s, c) => s + Number(c.share_pct || 0), 0);
       const anyLive = g.members.some(isContribLive);
-      const label = g.key === "\0" ? "(no nickname)" : g.key;
+      const label = g.key;
       const plus = `<button type="button" class="worker-plus nick-plus" data-nick-expand="${gid}" data-open="${
         isOpen ? "1" : "0"
       }" title="${g.members.length} addresses — click to expand">${isOpen ? "−" : "+"}</button>`;
@@ -809,7 +828,7 @@ function renderContributors(contrib) {
         <td class="muted">—</td>
         <td>${fmtInt(totCur)}</td>
         <td>${fmtInt(totWork)}</td>
-        <td>${fmtHashrate(totHs)}</td>
+        <td title="Sum of member hashrates">${fmtHashrate(totHs)}</td>
         <td>${totPct.toFixed(2)}%</td>
       </tr>`);
       for (const c of g.members) {
@@ -823,6 +842,7 @@ function renderContributors(contrib) {
       }
     }
   } else {
+    const rows = sortContributors(baseRows, sortMode);
     for (const c of rows) {
       displayIdx += 1;
       parts.push(contribAddressRowHtml(c, displayIdx));

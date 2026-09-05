@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905sort2" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905grp" />
 </head>
 <body>
   <header class="top">
@@ -148,17 +148,21 @@
             <span class="muted">· default = hashing now</span>
           </p>
           <p class="contrib-sort-bar muted" id="contribSortBar" hidden>
-            <label>Sort by
-              <select id="contribSort1" class="contrib-sort-sel" title="Primary sort"></select>
-            </label>
-            <label>then
-              <select id="contribSort2" class="contrib-sort-sel" title="Secondary sort">
+            <label>Group by
+              <select id="contribGroup" class="contrib-sort-sel" title="Group matching nicknames">
                 <option value="">—</option>
+                <option value="nickname">Nickname</option>
               </select>
             </label>
-            <label>then
-              <select id="contribSort3" class="contrib-sort-sel" title="Tertiary sort">
-                <option value="">—</option>
+            <label>Sort by
+              <select id="contribSort" class="contrib-sort-sel" title="Sort rows or groups">
+                <option value="work">Total work</option>
+                <option value="address">Address</option>
+                <option value="nickname">Nickname</option>
+                <option value="shares">Shares</option>
+                <option value="this_block">This block</option>
+                <option value="hashrate">Hashrate</option>
+                <option value="pct">Payout %</option>
               </select>
             </label>
           </p>
@@ -319,6 +323,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905sort2" defer></script>
+  <script src="/static/app.js?v=20260905grp" defer></script>
 </body>
 </html>
