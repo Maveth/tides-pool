@@ -58,10 +58,12 @@ class PoolStats(BaseModel):
     address_work_cap_window_sec: int = 3600
     gpu_baseline_hs: float = 0.0
     # Rough pool hashrate from recent accepted share work (Diff1 × 2^32 / Δt)
-    hashrate_hs: float = 0.0
+    hashrate_hs: float = 0.0  # ~10 minute average
     hashrate_window_sec: int = 600
     hashrate_work: int = 0
     hashrate_shares: int = 0
+    hashrate_hs_1h: float = 0.0  # ~1 hour average
+    hashrate_window_1h_sec: int = 3600
     hashrate_note: str = (
         "Estimate: Σ(share_work) × 2^32 / window_sec. "
         "share_work is Diff1 units from Gateway target_byte (often 4 at vardiff floor)."
@@ -70,6 +72,8 @@ class PoolStats(BaseModel):
     network_hashrate_hs: float = 0.0
     pool_network_share_pct: float = 0.0  # pool_hs / network_hs * 100
     est_block_time_sec: float | None = None  # difficulty * 2^32 / pool_hs
+    # Rough miner payout if you ran 1 TH/s for a day (7d find rate × reward × 1TH/pool_hs).
+    est_sats_per_day_per_ths: float | None = None
 
 
 

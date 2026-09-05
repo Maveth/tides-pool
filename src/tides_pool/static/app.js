@@ -1986,6 +1986,14 @@ async function loadPool() {
   const etaSec = stats.est_block_time_sec;
   const minersInWindow = Number(stats.addresses_in_window || 0);
   const activeMiners = (Array.isArray(contrib) ? contrib : []).filter(isContribLive).length;
+  const hs1h = Number(stats.hashrate_hs_1h || 0);
+  const estPerThs = Number(stats.est_sats_per_day_per_ths);
+  const estPerThsTip =
+    "Pure estimate only: (7-day find rate) × (block reward) × (1 TH/s ÷ pool hashrate). " +
+    "Not a promise — pool luck and hashrate swing wildly, and TIDES window dilution differs from this simple model.";
+  const estPerThsVal = Number.isFinite(estPerThs) && estPerThs > 0
+    ? `<span title="${estPerThsTip.replace(/"/g, "&quot;")}">≈ ${fmtBtc(estPerThs)}/day</span>`
+    : `<span title="${estPerThsTip.replace(/"/g, "&quot;")}">—</span>`;
   document.getElementById("poolCards").innerHTML = [
     card(
       "Network",
@@ -1997,7 +2005,16 @@ async function loadPool() {
         "Network hashrate (node) · pool share = pool HR / network HR"
       )
     ),
-    card("Pool hashrate", fmtHashrate(stats.hashrate_hs), true),
+    card(
+      "Pool hashrate",
+      cardSplitValue(
+        fmtHashrate(stats.hashrate_hs),
+        "10m",
+        fmtHashrate(hs1h),
+        "1h",
+        "Pool hashrate from accepted share work · 10-minute and 1-hour averages"
+      )
+    ),
     card(
       "Finds",
       cardSplitValue(
@@ -2030,10 +2047,7 @@ async function loadPool() {
           : "Confirmed + pending finds (orphans excluded)"
       )
     ),
-    card(
-      "Reward window",
-      `${fmtInt(Math.max(Number(stats.window_blocks ?? 8) - 1, 0))} + current`
-    ),
+    card("Est. @ 1 TH/s", estPerThsVal),
   ].join("");
   renderFeeFootnote(stats);
 
