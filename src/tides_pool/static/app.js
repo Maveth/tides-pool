@@ -373,9 +373,19 @@ const KIND_ICO = {
 const COINBASER_TOP_N = 12;
 let coinbaserExpanded = false;
 let coinbaserLast = null;
-let contribShowAll = false;
-let contribLast = null;
 const CONTRIB_OPEN_KEY = "tides_contrib_worker_open";
+const CONTRIB_SORT_KEY = "tides_contrib_sort";
+const CONTRIB_SHOW_ALL_KEY = "tides_contrib_show_all";
+const CONTRIB_NICK_OPEN_KEY = "tides_contrib_nick_open";
+const CONTRIB_SORT_OPTS = new Set([
+  "work",
+  "address",
+  "nickname",
+  "shares",
+  "this_block",
+  "hashrate",
+  "pct",
+]);
 function loadContribWorkerOpen() {
   try {
     return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_OPEN_KEY) || "[]"));
@@ -390,7 +400,91 @@ function saveContribWorkerOpen(set) {
     /* ignore quota / private mode */
   }
 }
+function loadContribNickOpen() {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_NICK_OPEN_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveContribNickOpen(set) {
+  try {
+    sessionStorage.setItem(CONTRIB_NICK_OPEN_KEY, JSON.stringify([...set]));
+  } catch {
+    /* ignore */
+  }
+}
+function loadContribSort() {
+  try {
+    const v = sessionStorage.getItem(CONTRIB_SORT_KEY) || "work";
+    return CONTRIB_SORT_OPTS.has(v) ? v : "work";
+  } catch {
+    return "work";
+  }
+}
+function saveContribSort(v) {
+  try {
+    sessionStorage.setItem(CONTRIB_SORT_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+function loadContribShowAll() {
+  try {
+    return sessionStorage.getItem(CONTRIB_SHOW_ALL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveContribShowAll(on) {
+  try {
+    sessionStorage.setItem(CONTRIB_SHOW_ALL_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+let contribShowAll = loadContribShowAll();
+let contribLast = null;
+let contribSort = loadContribSort();
 let contribWorkerOpen = loadContribWorkerOpen();
+let contribNickOpen = loadContribNickOpen();
+
+function nickKey(c) {
+  const n = ((c && c.nickname) || "").trim();
+  return n || "\0"; // empty nick sorts / groups last
+}
+
+function sortContributors(list, mode) {
+  const rows = list.slice();
+  const cmpStr = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" });
+  rows.sort((a, b) => {
+    switch (mode) {
+      case "address":
+        return cmpStr(String(a.address || ""), String(b.address || ""));
+      case "nickname": {
+        const ka = nickKey(a);
+        const kb = nickKey(b);
+        if (ka === "\0" && kb !== "\0") return 1;
+        if (kb === "\0" && ka !== "\0") return -1;
+        const c = cmpStr(ka === "\0" ? "" : ka, kb === "\0" ? "" : kb);
+        if (c !== 0) return c;
+        return cmpStr(String(a.address || ""), String(b.address || ""));
+      }
+      case "shares":
+        return Number(b.shares || 0) - Number(a.shares || 0);
+      case "this_block":
+        return Number(b.work_current || 0) - Number(a.work_current || 0);
+      case "hashrate":
+        return Number(b.hashrate_hs || 0) - Number(a.hashrate_hs || 0);
+      case "pct":
+        return Number(b.share_pct || 0) - Number(a.share_pct || 0);
+      case "work":
+      default:
+        return Number(b.work || 0) - Number(a.work || 0);
+    }
+  });
+  return rows;
+}
 
 function isContribLive(c) {
   return (
@@ -490,56 +584,53 @@ function renderCoinbaser(coinbaser) {
   }
 }
 
-function renderContributors(contrib) {
-  const cbody = document.getElementById("contribBody");
-  const more = document.getElementById("contribMore");
-  if (!cbody) return;
-  contribLast = Array.isArray(contrib) ? contrib : [];
-  if (!contribLast.length) {
-    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
-    if (more) {
-      more.hidden = true;
-      more.innerHTML = "";
-    }
-    return;
-  }
-  const live = contribLast.filter(isContribLive);
-  const restN = contribLast.length - live.length;
-  const rows = contribShowAll || restN <= 0 ? contribLast : live;
-  // Keep original rank numbers from full list
-  const rank = new Map(contribLast.map((c, i) => [c.address, i + 1]));
-  const parts = [];
-  for (const c of rows) {
-    const i = rank.get(c.address) || 0;
-    const wlist = Array.isArray(c.workers) ? c.workers : [];
-    const multi = wlist.length > 1;
-    const expandId = `cw-${c.address}`;
-    const isOpen = multi && contribWorkerOpen.has(expandId);
-    const plus = multi
-      ? `<button type="button" class="worker-plus" data-expand="${expandId}" data-open="${
-          isOpen ? "1" : "0"
-        }" title="${wlist.length} workers — click to expand">${isOpen ? "−" : "+"}</button>`
-      : "";
-    parts.push(`<tr>
+function contribAddressRowHtml(
+  c,
+  rankNum,
+  { indentNick = false, nickParent = null, nickHidden = false } = {}
+) {
+  const wlist = Array.isArray(c.workers) ? c.workers : [];
+  const multi = wlist.length > 1;
+  const expandId = `cw-${c.address}`;
+  const isOpen = multi && contribWorkerOpen.has(expandId);
+  const plus = multi
+    ? `<button type="button" class="worker-plus" data-expand="${expandId}" data-open="${
+        isOpen ? "1" : "0"
+      }" title="${wlist.length} workers — click to expand">${isOpen ? "−" : "+"}</button>`
+    : "";
+  const nick = (c.nickname || "").trim();
+  const nickCell = indentNick
+    ? `<td class="muted" title="${nick ? `Nickname: ${escapeHtml(nick)}` : ""}">↳</td>`
+    : clipCell(c.nickname, {
+        title: nick ? `Nickname: ${nick}` : "",
+        wide: true,
+      });
+  const nickAttrs = nickParent
+    ? ` class="nick-sub" data-nick-parent="${nickParent}"${nickHidden ? " hidden" : ""}`
+    : "";
+  const main = `<tr${nickAttrs} data-addr="${escapeHtml(c.address)}">
         <td class="activity-cell">${activityDot(c)}</td>
-        <td>${i}${plus ? " " + plus : ""}</td>
+        <td>${rankNum}${plus ? " " + plus : ""}</td>
         <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
-        ${clipCell(c.nickname, { title: c.nickname ? `Nickname: ${c.nickname}` : "", wide: true })}
+        ${nickCell}
         <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
         <td title="${lastShareTitle(c)}">${lastShareLabel(c)}</td>
         <td title="Work since last confirmed pool find (unfinished current block)">${fmtInt(c.work_current ?? 0)}</td>
         <td title="Total work in payout window only (7 confirmed + current) — not lifetime">${fmtInt(c.work)}</td>
         <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
         <td title="Your total window work ÷ window work">${Number(c.share_pct || 0).toFixed(2)}%</td>
-      </tr>`);
-    if (multi) {
-      const sub = wlist
-        .map((w) => {
-          const payoutCell =
-            w.sats != null
-              ? `<span title="${fmtBtcTitle(w.sats)}">${fmtBtc(w.sats)}</span>`
-              : `<span title="≈ ${Number(w.share_pct || 0).toFixed(1)}% of this address">${Number(w.share_pct || 0).toFixed(1)}%</span>`;
-          return `<tr class="worker-sub" data-parent="${expandId}" ${isOpen ? "" : "hidden"}>
+      </tr>`;
+  let sub = "";
+  if (multi) {
+    const workerHidden = nickHidden || !isOpen;
+    const nickData = nickParent ? ` data-nick-parent="${nickParent}"` : "";
+    sub = wlist
+      .map((w) => {
+        const payoutCell =
+          w.sats != null
+            ? `<span title="${fmtBtcTitle(w.sats)}">${fmtBtc(w.sats)}</span>`
+            : `<span title="≈ ${Number(w.share_pct || 0).toFixed(1)}% of this address">${Number(w.share_pct || 0).toFixed(1)}%</span>`;
+        return `<tr class="worker-sub" data-parent="${expandId}"${nickData}${workerHidden ? " hidden" : ""}>
             <td></td>
             <td></td>
             <td class="muted" colspan="2">↳ <span class="mono">${escapeHtml(w.worker)}</span></td>
@@ -550,13 +641,110 @@ function renderContributors(contrib) {
             <td>${fmtHashrate(w.hashrate_hs)}</td>
             <td>${payoutCell}</td>
           </tr>`;
-        })
-        .join("");
-      parts.push(sub);
+      })
+      .join("");
+  }
+  return main + sub;
+}
+
+function renderContributors(contrib) {
+  const cbody = document.getElementById("contribBody");
+  const more = document.getElementById("contribMore");
+  const sortBar = document.getElementById("contribSortBar");
+  const sortSel = document.getElementById("contribSort");
+  if (!cbody) return;
+  contribLast = Array.isArray(contrib) ? contrib : [];
+  if (!contribLast.length) {
+    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
+    if (more) {
+      more.hidden = true;
+      more.innerHTML = "";
+    }
+    if (sortBar) sortBar.hidden = true;
+    return;
+  }
+  const live = contribLast.filter(isContribLive);
+  const restN = contribLast.length - live.length;
+  const showingAll = contribShowAll || restN <= 0;
+  // Sort control only when the full window list is visible
+  if (sortBar) sortBar.hidden = !showingAll;
+  if (sortSel && sortSel.value !== contribSort) sortSel.value = contribSort;
+  if (sortSel && !sortSel.dataset.wired) {
+    sortSel.dataset.wired = "1";
+    sortSel.addEventListener("change", () => {
+      const v = sortSel.value;
+      contribSort = CONTRIB_SORT_OPTS.has(v) ? v : "work";
+      saveContribSort(contribSort);
+      renderContributors(contribLast);
+    });
+  }
+
+  const baseRows = showingAll ? contribLast : live;
+  const mode = showingAll ? contribSort : "work";
+  const rows = sortContributors(baseRows, mode);
+  // # = position in the currently displayed (sorted) list
+  const parts = [];
+  let displayIdx = 0;
+
+  if (showingAll && mode === "nickname") {
+    // Group consecutive same nickname; multi-member groups get a + header.
+    const groups = [];
+    for (const c of rows) {
+      const k = nickKey(c);
+      const last = groups[groups.length - 1];
+      if (last && last.key === k && k !== "\0") last.members.push(c);
+      else groups.push({ key: k, members: [c] });
+    }
+    for (const g of groups) {
+      if (g.members.length === 1) {
+        displayIdx += 1;
+        parts.push(contribAddressRowHtml(g.members[0], displayIdx));
+        continue;
+      }
+      const gid = `cn-${encodeURIComponent(g.key)}`;
+      const isOpen = contribNickOpen.has(gid);
+      const totShares = g.members.reduce((s, c) => s + Number(c.shares || 0), 0);
+      const totWork = g.members.reduce((s, c) => s + Number(c.work || 0), 0);
+      const totCur = g.members.reduce((s, c) => s + Number(c.work_current || 0), 0);
+      const totHs = g.members.reduce((s, c) => s + Number(c.hashrate_hs || 0), 0);
+      const totPct = g.members.reduce((s, c) => s + Number(c.share_pct || 0), 0);
+      const anyLive = g.members.some(isContribLive);
+      const label = g.key === "\0" ? "(no nickname)" : g.key;
+      const plus = `<button type="button" class="worker-plus nick-plus" data-nick-expand="${gid}" data-open="${
+        isOpen ? "1" : "0"
+      }" title="${g.members.length} addresses — click to expand">${isOpen ? "−" : "+"}</button>`;
+      displayIdx += 1;
+      parts.push(`<tr class="nick-group" data-nick-group="${gid}">
+        <td class="activity-cell">${anyLive ? activityDot({ activity: "live", hashrate_hs: totHs }) : activityDot({ activity: "offline", hashrate_hs: 0 })}</td>
+        <td>${displayIdx} ${plus}</td>
+        <td class="muted" title="${g.members.length} addresses with this nickname">${g.members.length} addresses</td>
+        ${clipCell(label, { title: `Nickname group: ${label}`, wide: true })}
+        <td>${fmtInt(totShares)}</td>
+        <td class="muted">—</td>
+        <td>${fmtInt(totCur)}</td>
+        <td>${fmtInt(totWork)}</td>
+        <td>${fmtHashrate(totHs)}</td>
+        <td>${totPct.toFixed(2)}%</td>
+      </tr>`);
+      for (const c of g.members) {
+        parts.push(
+          contribAddressRowHtml(c, "", {
+            indentNick: true,
+            nickParent: gid,
+            nickHidden: !isOpen,
+          })
+        );
+      }
+    }
+  } else {
+    for (const c of rows) {
+      displayIdx += 1;
+      parts.push(contribAddressRowHtml(c, displayIdx));
     }
   }
+
   cbody.innerHTML = parts.join("");
-  cbody.querySelectorAll(".worker-plus").forEach((btn) => {
+  cbody.querySelectorAll(".worker-plus:not(.nick-plus)").forEach((btn) => {
     btn.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -568,7 +756,33 @@ function renderContributors(contrib) {
       btn.dataset.open = open ? "0" : "1";
       btn.textContent = open ? "+" : "−";
       cbody.querySelectorAll("tr.worker-sub").forEach((tr) => {
-        if (tr.getAttribute("data-parent") === id) tr.hidden = open;
+        if (tr.getAttribute("data-parent") !== id) return;
+        const nickParent = tr.getAttribute("data-nick-parent");
+        if (nickParent && !contribNickOpen.has(nickParent)) {
+          tr.hidden = true;
+          return;
+        }
+        tr.hidden = open;
+      });
+    });
+  });
+  cbody.querySelectorAll(".nick-plus").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = btn.getAttribute("data-nick-expand");
+      const open = btn.dataset.open === "1";
+      if (open) contribNickOpen.delete(id);
+      else contribNickOpen.add(id);
+      saveContribNickOpen(contribNickOpen);
+      btn.dataset.open = open ? "0" : "1";
+      btn.textContent = open ? "+" : "−";
+      cbody.querySelectorAll(`tr.nick-sub[data-nick-parent="${id}"]`).forEach((tr) => {
+        tr.hidden = open;
+      });
+      cbody.querySelectorAll(`tr.worker-sub[data-nick-parent="${id}"]`).forEach((tr) => {
+        const wid = tr.getAttribute("data-parent");
+        tr.hidden = open || !contribWorkerOpen.has(wid);
       });
     });
   });
@@ -585,6 +799,7 @@ function renderContributors(contrib) {
       if (btn) {
         btn.onclick = () => {
           contribShowAll = !contribShowAll;
+          saveContribShowAll(contribShowAll);
           renderContributors(contribLast);
         };
       }

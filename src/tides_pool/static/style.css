@@ -246,6 +246,25 @@ tr.worker-sub td {
   padding-top: 0.35rem;
   padding-bottom: 0.35rem;
 }
+.contrib-sort-bar {
+  margin: 0.35rem 0 0.6rem;
+}
+.contrib-sort-bar select {
+  margin-left: 0.35rem;
+  font: inherit;
+  background: var(--panel, #1a1a1a);
+  color: inherit;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+}
+tr.nick-group td {
+  background: rgba(61, 214, 198, 0.06);
+  font-weight: 500;
+}
+tr.nick-sub td {
+  background: rgba(255,255,255,0.02);
+}
 .worker-chart-filters {
   display: flex;
   flex-wrap: wrap;
