@@ -2012,9 +2012,9 @@ async function loadPool() {
       "Pool hashrate",
       cardSplitValue(
         fmtHashrate(stats.hashrate_hs),
-        "10m",
+        "10 min",
         fmtHashrate(hs1h),
-        "1h",
+        "1 hour",
         "Pool hashrate from accepted share work · 10-minute and 1-hour averages"
       )
     ),
