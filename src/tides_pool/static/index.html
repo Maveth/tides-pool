@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905cards8" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905bonus1" />
 </head>
 <body>
   <header class="top">
@@ -21,9 +21,30 @@
 
   <main>
     <section id="poolView">
-      <div class="fee-promo" title="Pool fee is currently zero" role="status">
-        <span class="fee-promo-main">Currently <strong>0% fees</strong></span>
-        <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
+      <div class="promo-stack">
+        <div class="fee-promo" title="Pool fee is currently zero" role="status">
+          <span class="fee-promo-main">Currently <strong>0% fees</strong></span>
+          <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
+        </div>
+        <div
+          class="bonus-promo"
+          title="Limited-time off-chain finder bonus while fees are 0%. ~4% of a block (~0.125 BTC). 8 bonuses total."
+          role="status"
+        >
+          <span class="bonus-promo-main">Limited-time finder bonus · <strong>~0.125 BTC</strong></span>
+          <span class="bonus-promo-aside">per pool find · paid manually by ops</span>
+          <div class="bonus-spots" aria-label="2 of 8 finder bonuses claimed">
+            <span class="bonus-spot claimed" title="Claimed"></span>
+            <span class="bonus-spot claimed" title="Claimed"></span>
+            <span class="bonus-spot" title="Open"></span>
+            <span class="bonus-spot" title="Open"></span>
+            <span class="bonus-spot" title="Open"></span>
+            <span class="bonus-spot" title="Open"></span>
+            <span class="bonus-spot" title="Open"></span>
+            <span class="bonus-spot" title="Open"></span>
+            <span class="bonus-spots-label"><strong>2</strong> / 8 claimed</span>
+          </div>
+        </div>
       </div>
       <h1>RIPTIDE dashboard</h1>
       <p class="muted">Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
@@ -335,6 +356,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905cards8" defer></script>
+  <script src="/static/app.js?v=20260905bonus1" defer></script>
 </body>
 </html>
