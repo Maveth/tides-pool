@@ -577,7 +577,8 @@ function ensureCoinbaserOutlabelsPlugin() {
       ctx.lineJoin = "round";
       // Labels in layout padding. Rim → short radial stub → one angled leg to text.
       const labelGap = 8;
-      const outerPad = 8;
+      // Inset from canvas edges so trailing "%" isn't clipped on some displays.
+      const outerPad = 18;
       const drawSide = (arr, onRight) => {
         const colW = onRight ? chart.width - chartArea.right : chartArea.left;
         const maxTw = Math.max(40, colW - outerPad - labelGap - 4);
