@@ -800,13 +800,29 @@ class DatumPrimeSession:
     def _remember_coinbaser(self, cid: int, n_value_outs: int) -> None:
         self.recent_coinbasers[cid & 0xFF] = {"n_value_outs": int(n_value_outs)}
         # keep a small ring so lagged Gateways still validate
-        while len(self.recent_coinbasers) > 12:
+        while len(self.recent_coinbasers) > 24:
             oldest = next(iter(self.recent_coinbasers))
             self.recent_coinbasers.pop(oldest, None)
 
     def _assigned_multi_out(self) -> bool:
         """True if any recent coinbaser had ≥2 value payouts (fair split, not ops-only)."""
         return any(int(v.get("n_value_outs") or 0) >= 2 for v in self.recent_coinbasers.values())
+
+    def _coinbase_id_ok(self, coinbase_id: int, *, subsidy_only: bool) -> tuple[bool, str]:
+        """When multi-out was assigned, share must use a known non-empty coinbase id.
+
+        Returns (ok, why). why is empty when ok.
+        """
+        if not self._assigned_multi_out():
+            return True, ""
+        cid = int(coinbase_id) & 0xFF
+        if subsidy_only or cid == 0 or cid == 0xFF:
+            return False, "coinbase not multi-out"
+        if cid not in self.recent_coinbasers:
+            return False, "unknown coinbase_id"
+        # Prefer ids that were actually multi-out (≥2); allow any remembered id
+        # so a lagged single-out assignment in the ring does not false-reject.
+        return True, ""
 
     async def _get_quarantine_cached(self, address: str) -> dict | None:
         known, q = self.qguard.get_cached_quarantine(address)
@@ -1393,10 +1409,11 @@ class DatumPrimeSession:
                 pass
             return
 
-        # When we assigned a multi-out split, refuse empty/type-0/subsidy-only work for credit.
-        # Blake Gateways that mine coinbase[0] send coinbase_id=0 → zero shares until fixed.
-        if self._assigned_multi_out() and (subsidy_only or coinbase_id == 0):
-            _reject(DATUM_REJECT_BAD_COINBASE_OUTPUTS, "coinbase not multi-out")
+        # When we assigned a multi-out split, refuse empty/type-0/subsidy-only
+        # *and* unknown coinbase_id (must be one we recently assigned).
+        cb_ok, cb_why = self._coinbase_id_ok(coinbase_id, subsidy_only=subsidy_only)
+        if not cb_ok:
+            _reject(DATUM_REJECT_BAD_COINBASE_OUTPUTS, cb_why)
             try:
                 self.coinbaser_cache.note_reject_ua(self.client_ua, kind="r27")
             except Exception:  # noqa: BLE001
@@ -1414,7 +1431,7 @@ class DatumPrimeSession:
                 address,
                 accepted=False,
                 reason_code=DATUM_REJECT_BAD_COINBASE_OUTPUTS,
-                why="coinbase not multi-out",
+                why=cb_why,
                 worker=worker,
                 is_block=is_block,
             )
@@ -1422,7 +1439,7 @@ class DatumPrimeSession:
                 address,
                 accepted=False,
                 reason_code=DATUM_REJECT_BAD_COINBASE_OUTPUTS,
-                why="coinbase not multi-out",
+                why=cb_why,
             )
             await self._maybe_quarantine(address, is_block=is_block)
             return
