@@ -1993,7 +1993,8 @@ async function loadPool() {
   const estPerThs = Number(stats.est_sats_per_day_per_ths);
   const estPerThsTip =
     "Rough estimate only: (7-day find rate) × (block reward) × (1 TH/s ÷ pool hashrate). " +
-    "Not a promise — pool luck and hashrate swing wildly, and TIDES window dilution differs from this simple model.";
+    "Not a promise — swings with pool luck, network difficulty, and pool hashrate; " +
+    "TIDES window dilution also differs from this simple model.";
   const estPerThsVal = Number.isFinite(estPerThs) && estPerThs > 0
     ? `<span title="${estPerThsTip.replace(/"/g, "&quot;")}">≈ ${fmtBtc(estPerThs)}/day</span>`
     : `<span title="${estPerThsTip.replace(/"/g, "&quot;")}">—</span>`;
@@ -2054,7 +2055,7 @@ async function loadPool() {
       "Rough estimate @ 1 TH/s",
       estPerThsVal,
       false,
-      "Varies wildly based on pool luck"
+      "Varies with pool luck, network difficulty, and pool hashrate"
     ),
   ].join("");
   renderFeeFootnote(stats);
