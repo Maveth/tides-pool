@@ -169,8 +169,8 @@ h2 { margin: 1.25rem 0 0.65rem; font-size: 1.1rem; }
 
 .cards {
   display: grid;
-  /* Prefer even rows (8 cards → 4+4). Avoid auto-fit packing 6+2. */
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* 6 cards → 3+3 keeps related pairs adjacent (network/pool, finds/miners, blocks/window). */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
   margin-bottom: 0.25rem;
 }

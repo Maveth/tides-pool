@@ -1815,20 +1815,22 @@ async function loadPool() {
     }
   }
 
-  const lastH = stats.last_pool_block_height;
-  let lastFindVal = "none yet";
-  if (lastH != null) {
-    const age =
-      stats.last_pool_block_age_sec != null
-        ? fmtAge(stats.last_pool_block_age_sec)
-        : null;
-    lastFindVal = age ? `${lastH} · ${age}` : String(lastH);
-  }
+  const lastAge =
+    stats.last_pool_block_age_sec != null
+      ? fmtAge(stats.last_pool_block_age_sec)
+      : stats.last_pool_block_height != null
+        ? "found"
+        : "none yet";
+  const lastFindTip =
+    stats.last_pool_block_height != null
+      ? `Last pool find age (height ${stats.last_pool_block_height} — for reference only)`
+      : "No pool find yet";
   const netHs = Number(stats.network_hashrate_hs || 0);
   const sharePct = Number(stats.pool_network_share_pct || 0);
   const etaSec = stats.est_block_time_sec;
+  const minersInWindow = Number(stats.addresses_in_window || 0);
+  const activeMiners = (Array.isArray(contrib) ? contrib : []).filter(isContribLive).length;
   document.getElementById("poolCards").innerHTML = [
-    card("Chain tip", String(stats.chain_height ?? "—") + (stats.rpc_ok ? "" : " · RPC?")),
     card(
       "Network",
       cardSplitValue(
@@ -1839,18 +1841,29 @@ async function loadPool() {
         "Network hashrate (node) · pool share = pool HR / network HR"
       )
     ),
-    card(
-      "Est. find",
-      `<span title="Expected wait for a pool block at current pool hashrate (diff × 2³² / pool HR). Luck varies.">${fmtDuration(etaSec)}</span>`
-    ),
     card("Pool hashrate", fmtHashrate(stats.hashrate_hs), true),
-    card("Miners in window", fmtInt(stats.addresses_in_window)),
     card(
-      "Reward window",
-      `${fmtInt(Math.max(Number(stats.window_blocks ?? 8) - 1, 0))} + current`
+      "Finds",
+      cardSplitValue(
+        `<span title="Expected wait for next pool block at current pool hashrate (diff × 2³² / pool HR). Luck varies.">${fmtDuration(etaSec)}</span>`,
+        "est.",
+        `<span title="${String(lastFindTip).replace(/"/g, "&quot;")}">${lastAge}</span>`,
+        "last",
+        "Estimated time to next find · age of last find (no block heights)"
+      )
     ),
     card(
-      "Blocks",
+      "Miners",
+      cardSplitValue(
+        fmtInt(activeMiners),
+        "active",
+        fmtInt(minersInWindow),
+        "in window",
+        "Active = hashing in the last ~10 minutes · In window = payout addresses with work in the current window"
+      )
+    ),
+    card(
+      "Blocks found",
       cardSplitValue(
         fmtInt(stats.blocks_last_24h),
         "24h",
@@ -1861,7 +1874,10 @@ async function loadPool() {
           : "Confirmed + pending finds (orphans excluded)"
       )
     ),
-    card("Last find", lastFindVal),
+    card(
+      "Reward window",
+      `${fmtInt(Math.max(Number(stats.window_blocks ?? 8) - 1, 0))} + current`
+    ),
   ].join("");
   renderFeeFootnote(stats);
 
