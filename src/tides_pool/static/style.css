@@ -189,6 +189,14 @@ h2 { margin: 1.25rem 0 0.65rem; font-size: 1.1rem; }
 .card .label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .card .value { margin-top: 0.35rem; font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; word-break: break-all; }
 .card .value.mono { font-family: var(--mono); font-size: 0.95rem; }
+.card .card-note {
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
 .card-split {
   display: flex;
   align-items: stretch;

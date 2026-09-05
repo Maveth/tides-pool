@@ -270,8 +270,11 @@ async function jget(url) {
   return r.json();
 }
 
-function card(label, value, mono) {
-  return `<div class="card"><div class="label">${label}</div><div class="value${mono ? " mono" : ""}">${value}</div></div>`;
+function card(label, value, mono, note) {
+  const noteHtml = note
+    ? `<div class="card-note">${note}</div>`
+    : "";
+  return `<div class="card"><div class="label">${label}</div><div class="value${mono ? " mono" : ""}">${value}</div>${noteHtml}</div>`;
 }
 
 /** Compact two-stat card value: 24h | 1wk (same box size as other cards). */
@@ -1989,7 +1992,7 @@ async function loadPool() {
   const hs1h = Number(stats.hashrate_hs_1h || 0);
   const estPerThs = Number(stats.est_sats_per_day_per_ths);
   const estPerThsTip =
-    "Pure estimate only: (7-day find rate) × (block reward) × (1 TH/s ÷ pool hashrate). " +
+    "Rough estimate only: (7-day find rate) × (block reward) × (1 TH/s ÷ pool hashrate). " +
     "Not a promise — pool luck and hashrate swing wildly, and TIDES window dilution differs from this simple model.";
   const estPerThsVal = Number.isFinite(estPerThs) && estPerThs > 0
     ? `<span title="${estPerThsTip.replace(/"/g, "&quot;")}">≈ ${fmtBtc(estPerThs)}/day</span>`
@@ -2047,7 +2050,12 @@ async function loadPool() {
           : "Confirmed + pending finds (orphans excluded)"
       )
     ),
-    card("Estimated @ 1 TH/s", estPerThsVal),
+    card(
+      "Rough estimate @ 1 TH/s",
+      estPerThsVal,
+      false,
+      "Varies wildly based on pool luck"
+    ),
   ].join("");
   renderFeeFootnote(stats);
 
