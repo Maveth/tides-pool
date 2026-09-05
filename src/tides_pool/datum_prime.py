@@ -571,6 +571,8 @@ class QuarantineGuard:
         self._q: dict[str, dict | None] = {}
         self._probation_cleared: set[str] = set()
         self._probation_known: set[str] = set()
+        # address → True if last_nickname known non-empty (skip POW nick probes)
+        self._nick_has: dict[str, bool] = {}
 
     def note_attempt(
         self,
@@ -600,6 +602,18 @@ class QuarantineGuard:
             self._since_check[addr] = 0
             return True
         return False
+
+    def nick_status(self, address: str) -> tuple[bool, bool]:
+        """Return (known, has_nickname). known=False → must ask DB."""
+        addr = (address or "").strip()
+        if addr in self._nick_has:
+            return True, bool(self._nick_has[addr])
+        return False, False
+
+    def set_nick_status(self, address: str, has_nick: bool) -> None:
+        addr = (address or "").strip()
+        if addr:
+            self._nick_has[addr] = bool(has_nick)
 
     def ring_stats(self, address: str, limit: int = 20) -> tuple[int, int]:
         items = list(self._rings.get(address, ()))[:limit]
@@ -860,8 +874,19 @@ class DatumPrimeSession:
         db_n = await self.store.consecutive_good_attempts(address, limit=limit)
         return db_n
 
-    async def _maybe_quarantine(self, address: str, *, is_block: bool) -> bool:
-        """Return True if address is (or becomes) quarantined — freeze new share credit."""
+    async def _maybe_quarantine(
+        self,
+        address: str,
+        *,
+        is_block: bool,
+        msg: bytes | None = None,
+        after_user: int | None = None,
+    ) -> bool:
+        """Return True if address is (or becomes) quarantined — freeze new share credit.
+
+        On the throttled check tick, also try learning a blank nickname from POW
+        coinbase section 0x02 when present (never rejects a share for bad/missing nick).
+        """
         if self.settings.quarantine_allowlisted(address):
             q = await self._get_quarantine_cached(address)
             if q:
@@ -877,6 +902,8 @@ class DatumPrimeSession:
         # Throttle: clean miners every N attempts; hot (r27) every time.
         if not self.qguard.should_check_auto_q(address):
             return False
+        if msg is not None and after_user is not None:
+            await self._try_learn_nickname_from_pow(address, msg, after_user)
         win = int(getattr(self.settings, "quarantine_reject27_window", 20) or 20)
         ratio = float(getattr(self.settings, "quarantine_reject27_ratio", 0.5) or 0.5)
         min_n = int(getattr(self.settings, "quarantine_reject27_min_samples", 3) or 3)
@@ -1184,6 +1211,92 @@ class DatumPrimeSession:
             break
         return height, value
 
+    @staticmethod
+    def _pow_coinbase_ascii(msg: bytes, after_user: int) -> str:
+        """ASCII view of POW section 0x02 coinb1||coinb2 when present (else "")."""
+        i = after_user
+        while i < len(msg):
+            tag = msg[i]
+            i += 1
+            if tag == 0xFE:
+                break
+            if tag == 0x01 and i + 68 <= len(msg):
+                mcount = msg[i + 67]
+                need = 68 + int(mcount) * 32
+                if i + need > len(msg):
+                    break
+                i += need
+                continue
+            if tag == 0x02 and i + 5 <= len(msg):
+                c1 = struct.unpack_from("<H", msg, i + 1)[0]
+                c2 = struct.unpack_from("<H", msg, i + 3)[0]
+                start = i + 5
+                end = start + c1 + c2
+                if end > len(msg) or c1 < 0 or c2 < 0:
+                    break
+                raw = msg[start:end]
+                return "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
+            if tag == 0x03 and i + 17 <= len(msg):
+                i += 17
+                continue
+            if tag == 0x04 and i + 4 <= len(msg):
+                i += 4
+                continue
+            if tag == 0x05 and i + 1 <= len(msg):
+                i += 1
+                continue
+            break
+        return ""
+
+    async def _try_learn_nickname_from_pow(
+        self, address: str, msg: bytes, after_user: int
+    ) -> None:
+        """If address has blank nickname and POW carries coinbase 0x02, learn secondary tag.
+
+        Prefetch method credited to iohzard; call-out from Taki. Best-effort only —
+        never rejects a share for missing/invalid nick.
+        """
+        addr = (address or "").strip()
+        if not addr:
+            return
+        known, has = self.qguard.nick_status(addr)
+        if known and has:
+            return
+        if not known:
+            try:
+                nmap = await self.store.nicknames_for_addresses([addr])
+            except Exception as exc:  # noqa: BLE001
+                log.debug("nickname lookup failed: %s", exc)
+                return
+            has = bool((nmap.get(addr) or "").strip())
+            self.qguard.set_nick_status(addr, has)
+            if has:
+                return
+        ascii_cb = self._pow_coinbase_ascii(msg, after_user)
+        if not ascii_cb:
+            return
+        try:
+            from tides_pool.block_confirm import extract_secondary_tag
+
+            nick = extract_secondary_tag(
+                ascii_cb, self.settings.coinbase_tag_primary
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("nickname extract failed: %s", exc)
+            return
+        if not nick:
+            return
+        try:
+            await self.store.set_address_nickname(addr, nick)
+            self.qguard.set_nick_status(addr, True)
+            log.info(
+                "nickname learned from POW coinbase address=%s nick=%s",
+                addr[:28],
+                nick,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("nickname save from POW failed: %s", exc)
+
     async def _note_block_found(
         self,
         *,
@@ -1340,6 +1453,8 @@ class DatumPrimeSession:
         username = (rest[:nul] if nul >= 0 else rest).decode("utf-8", errors="replace")
         address = username.split(".", 1)[0]
         worker = username.split(".", 1)[1] if "." in username else None
+        # TLV payload starts after username NUL + 4 reserved bytes.
+        after_user = 30 + (nul + 1 if nul >= 0 else len(rest)) + 4
 
         def _reject(reason: int, why: str) -> None:
             log.warning(
@@ -1464,7 +1579,9 @@ class DatumPrimeSession:
                 reason_code=DATUM_REJECT_BAD_COINBASE_OUTPUTS,
                 why=cb_why,
             )
-            await self._maybe_quarantine(address, is_block=is_block)
+            await self._maybe_quarantine(
+                address, is_block=is_block, msg=msg, after_user=after_user
+            )
             return
 
 
@@ -1632,7 +1749,6 @@ class DatumPrimeSession:
             # fall through — credit this share
 
 
-        after_user = 30 + (nul + 1 if nul >= 0 else len(rest)) + 4  # username + NUL + 4 reserved
         tlv_height, tlv_value = self._parse_pow_job_meta(msg, after_user)
 
         work = share_work_from_target_byte(
@@ -1679,6 +1795,10 @@ class DatumPrimeSession:
             )
             self.qguard.note_attempt(address, accepted=True, reason_code=0, why="ok")
             self.qguard.clear_hot_if_clean(address)
+            # Same throttle as reject-27 auto-Q: rare probe for blank nicknames
+            # when POW carries coinbase section 0x02 (never blocks the share).
+            if self.qguard.should_check_auto_q(address):
+                await self._try_learn_nickname_from_pow(address, msg, after_user)
             status = DATUM_POW_ACCEPTED
             reason = 0
             if cap > 0 and credit < work:
