@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905workers" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905vis" />
 </head>
 <body>
   <header class="top">
@@ -223,6 +223,24 @@
       <h1 id="userTitle">Address</h1>
       <div class="cards" id="userCards">Loading…</div>
 
+      <div class="box dashboard-panel" id="userWorkersBox" hidden>
+        <h2>Workers</h2>
+        <p class="muted chart-sub">Same payout address · window = 7 confirmed finds + current · hover a row for work &amp; est. next</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th title="Accepted shares in the payout window">Shares</th>
+                <th title="Rough hashrate from recent shares (~10m)">~H/s</th>
+                <th title="Click to show/hide work + est. next payout">Details</th>
+              </tr>
+            </thead>
+            <tbody id="userWorkerBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="box dashboard-panel" id="userChartBox">
         <div class="chart-head">
           <h2>Your hashrate</h2>
@@ -236,14 +254,6 @@
         <p class="muted chart-sub">From your accepted shares · axis in TH/s · markers = your finds</p>
         <div class="worker-chart-filters muted" id="userWorkerFilters" hidden></div>
         <div class="chart-wrap"><canvas id="userChart" aria-label="Miner hashrate chart"></canvas></div>
-        <div class="table-wrap" id="userWorkerTableWrap" hidden style="margin-top:0.75rem">
-          <table>
-            <thead>
-              <tr><th>Worker</th><th>Shares</th><th>Work</th><th>~H/s</th><th>Est. next</th></tr>
-            </thead>
-            <tbody id="userWorkerBody"></tbody>
-          </table>
-        </div>
       </div>
 
       <details class="miner-panel" id="payoutHistoryPanel">
@@ -294,6 +304,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905workers" defer></script>
+  <script src="/static/app.js?v=20260905vis" defer></script>
 </body>
 </html>

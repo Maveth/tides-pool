@@ -375,6 +375,22 @@ let coinbaserExpanded = false;
 let coinbaserLast = null;
 let contribShowAll = false;
 let contribLast = null;
+const CONTRIB_OPEN_KEY = "tides_contrib_worker_open";
+function loadContribWorkerOpen() {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_OPEN_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveContribWorkerOpen(set) {
+  try {
+    sessionStorage.setItem(CONTRIB_OPEN_KEY, JSON.stringify([...set]));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+let contribWorkerOpen = loadContribWorkerOpen();
 
 function isContribLive(c) {
   return (
@@ -497,9 +513,12 @@ function renderContributors(contrib) {
     const i = rank.get(c.address) || 0;
     const wlist = Array.isArray(c.workers) ? c.workers : [];
     const multi = wlist.length > 1;
-    const expandId = `cw-${c.address.slice(-10)}`;
+    const expandId = `cw-${c.address}`;
+    const isOpen = multi && contribWorkerOpen.has(expandId);
     const plus = multi
-      ? `<button type="button" class="worker-plus" data-expand="${expandId}" title="${wlist.length} workers — click to expand">+</button>`
+      ? `<button type="button" class="worker-plus" data-expand="${expandId}" data-open="${
+          isOpen ? "1" : "0"
+        }" title="${wlist.length} workers — click to expand">${isOpen ? "−" : "+"}</button>`
       : "";
     parts.push(`<tr>
         <td class="activity-cell">${activityDot(c)}</td>
@@ -520,7 +539,7 @@ function renderContributors(contrib) {
             w.sats != null
               ? `<span title="${fmtBtcTitle(w.sats)}">${fmtBtc(w.sats)}</span>`
               : `<span title="≈ ${Number(w.share_pct || 0).toFixed(1)}% of this address">${Number(w.share_pct || 0).toFixed(1)}%</span>`;
-          return `<tr class="worker-sub" data-parent="${expandId}" hidden>
+          return `<tr class="worker-sub" data-parent="${expandId}" ${isOpen ? "" : "hidden"}>
             <td></td>
             <td></td>
             <td class="muted" colspan="2">↳ <span class="mono">${escapeHtml(w.worker)}</span></td>
@@ -543,10 +562,13 @@ function renderContributors(contrib) {
       ev.stopPropagation();
       const id = btn.getAttribute("data-expand");
       const open = btn.dataset.open === "1";
+      if (open) contribWorkerOpen.delete(id);
+      else contribWorkerOpen.add(id);
+      saveContribWorkerOpen(contribWorkerOpen);
       btn.dataset.open = open ? "0" : "1";
       btn.textContent = open ? "+" : "−";
-      cbody.querySelectorAll(`tr.worker-sub[data-parent="${id}"]`).forEach((tr) => {
-        tr.hidden = open;
+      cbody.querySelectorAll("tr.worker-sub").forEach((tr) => {
+        if (tr.getAttribute("data-parent") === id) tr.hidden = open;
       });
     });
   });
@@ -1008,6 +1030,28 @@ const WORKER_CHART_COLORS = [
 ];
 let userChartData = null;
 let userWorkerVisible = {}; // worker -> bool; empty = all on
+let userWorkerAddr = "";
+const USER_WORKER_VIS_KEY = "tides_miner_worker_vis";
+
+function loadUserWorkerVisible(address) {
+  try {
+    const all = JSON.parse(sessionStorage.getItem(USER_WORKER_VIS_KEY) || "{}");
+    const saved = all[address];
+    return saved && typeof saved === "object" ? { ...saved } : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUserWorkerVisible(address, vis) {
+  try {
+    const all = JSON.parse(sessionStorage.getItem(USER_WORKER_VIS_KEY) || "{}");
+    all[address] = vis;
+    sessionStorage.setItem(USER_WORKER_VIS_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}
 
 function renderUserWorkerFilters(workers) {
   const el = document.getElementById("userWorkerFilters");
@@ -1054,6 +1098,7 @@ function renderUserWorkerFilters(workers) {
           allBox.checked = workers.every((w) => userWorkerVisible[w] !== false);
         }
       }
+      if (userWorkerAddr) saveUserWorkerVisible(userWorkerAddr, userWorkerVisible);
       if (userChartData) paintUserChart(userChartData);
     });
   });
@@ -1525,7 +1570,8 @@ async function loadUser(address) {
   document.getElementById("blocksView").classList.add("hidden");
   document.getElementById("userView").classList.remove("hidden");
   document.getElementById("addrInput").value = address;
-  userWorkerVisible = {};
+  userWorkerAddr = address;
+  userWorkerVisible = loadUserWorkerVisible(address);
   userChartData = null;
   wireSharesPager();
   const [user, payouts, stats, info] = await Promise.all([
@@ -1590,27 +1636,52 @@ async function loadUser(address) {
     card("Window size", fmtInt(stats.window_work_target) + " @ diff " + fmtInt(stats.block_difficulty)),
   ].join("");
 
-  const wWrap = document.getElementById("userWorkerTableWrap");
+  const wBox = document.getElementById("userWorkersBox");
   const wBody = document.getElementById("userWorkerBody");
   const wbreak = user.worker_breakdown || [];
-  if (wWrap && wBody) {
-    if (wbreak.length > 1) {
-      wWrap.hidden = false;
-      wBody.innerHTML = wbreak
-        .map(
-          (w) => `<tr>
+  if (wBox && wBody) {
+    if (wbreak.length >= 1) {
+      wBox.hidden = false;
+      const parts = [];
+      for (const w of wbreak) {
+        const tip =
+          `Window work ${fmtInt(w.work)}` +
+          (w.sats != null
+            ? ` · est. next ${fmtBtc(w.sats)} (${fmtBtcTitle(w.sats)})`
+            : ` · ${Number(w.share_pct || 0).toFixed(1)}% of this address`);
+        const wid = `uw-${escapeHtml(w.worker)}`;
+        parts.push(`<tr title="${escapeHtml(tip)}">
           <td class="mono">${escapeHtml(w.worker)}</td>
-          <td>${fmtInt(w.shares)}</td>
-          <td>${fmtInt(w.work)}</td>
-          <td>${fmtHashrate(w.hashrate_hs)}</td>
-          <td title="${w.sats != null ? fmtBtcTitle(w.sats) : ""}">${
-            w.sats != null ? fmtBtc(w.sats) : Number(w.share_pct || 0).toFixed(1) + "%"
-          }</td>
-        </tr>`
-        )
-        .join("");
+          <td title="Shares in payout window (7 confirmed + current)">${fmtInt(w.shares)}</td>
+          <td title="Recent hashrate (~10m)">${fmtHashrate(w.hashrate_hs)}</td>
+          <td><button type="button" class="worker-plus" data-udetail="${wid}" title="Show work + est. next">+</button></td>
+        </tr>`);
+        parts.push(`<tr class="worker-sub" data-udetail-row="${wid}" hidden>
+          <td class="muted" colspan="4">
+            Work <strong>${fmtInt(w.work)}</strong>
+            · ${Number(w.share_pct || 0).toFixed(1)}% of address
+            · Est. next
+            <strong title="${w.sats != null ? fmtBtcTitle(w.sats) : ""}">${
+              w.sats != null ? fmtBtc(w.sats) : "—"
+            }</strong>
+          </td>
+        </tr>`);
+      }
+      wBody.innerHTML = parts.join("");
+      wBody.querySelectorAll(".worker-plus[data-udetail]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const id = btn.getAttribute("data-udetail");
+          const open = btn.dataset.open === "1";
+          btn.dataset.open = open ? "0" : "1";
+          btn.textContent = open ? "+" : "−";
+          wBody.querySelectorAll(`[data-udetail-row="${id}"]`).forEach((tr) => {
+            tr.hidden = open;
+          });
+        });
+      });
     } else {
-      wWrap.hidden = true;
+      wBox.hidden = true;
       wBody.innerHTML = "";
     }
   }
