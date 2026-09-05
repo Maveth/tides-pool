@@ -676,6 +676,15 @@ def pack_header(
     return struct.pack("<I", word)
 
 
+def cmd_len_allowed(cmd_len: int, max_len: int) -> bool:
+    """True if header cmd_len is safe to buffer (0 = empty ping-style ok)."""
+    try:
+        n = int(cmd_len)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= n <= int(max_len)
+
+
 def unpack_header(raw: bytes) -> dict:
     word = struct.unpack("<I", raw[:4])[0]
     return {
@@ -950,6 +959,9 @@ class DatumPrimeSession:
             raise HandshakeError(
                 f"expected hello cmd1 sealed, got cmd={h.get('proto_cmd')} enc_pub={h.get('is_encrypted_pubkey')}"
             )
+        max_len = int(self.settings.datum_max_cmd_len)
+        if not cmd_len_allowed(h["cmd_len"], max_len):
+            raise HandshakeError(f"hello cmd_len {h['cmd_len']} exceeds max {max_len}")
         ct = await self._read_exact(h["cmd_len"])
         try:
             opened = SealedBox(self.pool_keys.box_sk).decrypt(ct)
@@ -1731,11 +1743,21 @@ class DatumPrimeSession:
             peer,
             self.client_ua or "(unknown)",
         )
+        max_len = int(self.settings.datum_max_cmd_len)
         while True:
             hdr_x = await self._read_exact(4)
             hdr_p = xor_header(hdr_x, self.recv_hdr_key)
             self.recv_hdr_key = header_xor_feedback(self.recv_hdr_key)
             h = unpack_header(hdr_p)
+            if not cmd_len_allowed(h["cmd_len"], max_len):
+                log.warning(
+                    "cmd_len %s exceeds max %s from %s cmd=%s — closing",
+                    h["cmd_len"],
+                    max_len,
+                    peer,
+                    h.get("proto_cmd"),
+                )
+                return
             payload = await self._read_exact(h["cmd_len"])
             if h["is_encrypted_channel"]:
                 assert self.box is not None

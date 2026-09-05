@@ -81,6 +81,9 @@ class Settings(BaseSettings):
 
     # DATUM Prime listen (encrypted Gateway pool_host protocol)
     datum_prime_port: int = 28916
+    # Cap inbound cmd_len before readexactly (protocol allows ~4MiB → DoS).
+    # 256KiB fits share+TLV coinbase/merkle; raise via env if a GW ever needs more.
+    datum_max_cmd_len: int = Field(default=262144, ge=4096, le=0x3FFFFF)
 
     # Quarantine: freeze NEW shares if miner mostly fails coinbaser check
     quarantine_reject27_ratio: float = 0.5
