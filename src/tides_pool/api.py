@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import socket
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Awaitable, Callable, TypeVar
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -55,6 +57,46 @@ _rpc_ok = False
 _prime_server = None
 _pool_pubkey_hex = ""
 _coinbaser_cache = None  # CoinbaserSplitCache | None
+
+_T = TypeVar("_T")
+
+
+class _TtlCache:
+    """Process-local TTL cache with single-flight refresh (web role dashboard APIs)."""
+
+    def __init__(self) -> None:
+        self._items: dict[str, tuple[float, Any]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    async def get_or_set(
+        self, key: str, ttl_sec: float, factory: Callable[[], Awaitable[_T]]
+    ) -> _T:
+        now = time.monotonic()
+        hit = self._items.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        async with self._lock_for(key):
+            now = time.monotonic()
+            hit = self._items.get(key)
+            if hit is not None and hit[0] > now:
+                return hit[1]
+            val = await factory()
+            self._items[key] = (now + max(float(ttl_sec), 1.0), val)
+            return val
+
+
+_dash_cache = _TtlCache()
+# Soft UI refresh is 60s; keep TTLs shorter so data stays reasonably fresh.
+_STATS_TTL_SEC = 15.0
+_CONTRIB_TTL_SEC = 20.0
+_CHART_POOL_TTL_SEC = 30.0
 
 
 @asynccontextmanager
@@ -598,9 +640,7 @@ async def health() -> HealthResponse:
     )
 
 
-@app.get("/stats", response_model=PoolStats)
-@app.get("/api/stats", response_model=PoolStats)
-async def stats() -> PoolStats:
+async def _stats_uncached() -> PoolStats:
     diff = await _difficulty()
     _shares, window, cutoff, n_conf = await _payout_window()
     filled = sum(s.work for s in window)
@@ -716,8 +756,25 @@ async def stats() -> PoolStats:
     )
 
 
+@app.get("/stats", response_model=PoolStats)
+@app.get("/api/stats", response_model=PoolStats)
+async def stats(response: Response) -> PoolStats:
+    response.headers["Cache-Control"] = f"public, max-age={int(_STATS_TTL_SEC)}"
+    return await _dash_cache.get_or_set("stats", _STATS_TTL_SEC, _stats_uncached)
+
+
 @app.get("/api/contributors", response_model=list[Contributor])
-async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor]:
+async def contributors(
+    response: Response, limit: int = Query(50, ge=1, le=500)
+) -> list[Contributor]:
+    response.headers["Cache-Control"] = f"public, max-age={int(_CONTRIB_TTL_SEC)}"
+    key = f"contrib:{int(limit)}"
+    return await _dash_cache.get_or_set(
+        key, _CONTRIB_TTL_SEC, lambda: _contributors_uncached(limit)
+    )
+
+
+async def _contributors_uncached(limit: int) -> list[Contributor]:
     _shares, window, cutoff, _n = await _payout_window()
     # Hide junk / lab-injected non-addresses (defense in depth; Prime already rejects).
     window = [s for s in window if is_valid_payout_address(getattr(s, "address", "") or "")]
@@ -961,7 +1018,19 @@ async def _network_hs_series(
 
 
 @app.get("/api/charts/pool")
-async def charts_pool(range: str = Query("24h")) -> dict:
+async def charts_pool(
+    response: Response, range: str = Query("24h")
+) -> dict:
+    response.headers["Cache-Control"] = f"public, max-age={int(_CHART_POOL_TTL_SEC)}"
+    rk = (range or "24h").strip().lower()
+    return await _dash_cache.get_or_set(
+        f"charts:pool:{rk}",
+        _CHART_POOL_TTL_SEC,
+        lambda: _charts_pool_uncached(rk),
+    )
+
+
+async def _charts_pool_uncached(range: str) -> dict:
     key, range_sec, bucket_sec, start, end, win_pre = await _chart_window(range)
     buckets = await store.share_work_buckets(
         start=start, end=end, bucket_sec=bucket_sec, address=None
