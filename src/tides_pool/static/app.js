@@ -1506,19 +1506,10 @@ async function loadPoolChart(range) {
       ? "Network"
       : "Network (tracking from now — history fills in over time)";
   const sub = document.querySelector("#poolChartBox .chart-sub");
+  // Legend covers pool / network / finds — no prose subtitle.
   if (sub) {
-    const spanSec = Number(data.range_sec || 0);
-    const spanBit =
-      data.range === "window" && spanSec > 0
-        ? ` · x-axis = payout window (~${fmtChartSpan(spanSec)})`
-        : "";
-    const winBit = win
-      ? ` · shaded = payout window (${win.label}) · bright dots = finds in window`
-      : " · markers = our finds";
-    sub.textContent =
-      netSrc === "samples"
-        ? `Pool vs network (sampled)${spanBit}${winBit}`
-        : `Pool vs network — sampling started; line fills in as we collect ~1/min${spanBit}${winBit}`;
+    sub.hidden = true;
+    sub.textContent = "";
   }
   const xBound = chartXBounds(data);
   const allFinds = findsIn.concat(findsOut);
@@ -1556,7 +1547,7 @@ async function loadPoolChart(range) {
         },
         {
           type: "scatter",
-          label: "In window",
+          label: "Block found",
           yAxisID: "yPool",
           data: findsIn,
           backgroundColor: "#f0b429",
@@ -1564,6 +1555,7 @@ async function loadPoolChart(range) {
           borderWidth: 2,
           pointRadius: 6,
           pointHoverRadius: 8,
+          pointStyle: "circle",
         },
         {
           type: "scatter",
@@ -1574,6 +1566,7 @@ async function loadPoolChart(range) {
           borderColor: "rgba(240,180,41,0.5)",
           pointRadius: 3.5,
           pointHoverRadius: 5,
+          pointStyle: "circle",
         },
       ],
     },
@@ -1586,14 +1579,14 @@ async function loadPoolChart(range) {
         const tip = els && els.length ? els[0] : null;
         const ds = tip && poolChartObj?.data?.datasets?.[tip.datasetIndex];
         const clickable =
-          ds && (ds.label === "In window" || ds.label === "Older finds");
+          ds && (ds.label === "Block found" || ds.label === "Older finds");
         evt.native && (evt.native.target.style.cursor = clickable ? "pointer" : "default");
       },
       onClick(_evt, els) {
         if (!els || !els.length) return;
         const tip = els[0];
         const ds = poolChartObj?.data?.datasets?.[tip.datasetIndex];
-        if (!ds || (ds.label !== "In window" && ds.label !== "Older finds")) return;
+        if (!ds || (ds.label !== "Block found" && ds.label !== "Older finds")) return;
         const raw = ds.data[tip.index];
         if (!raw) return;
         const href = mempoolBlockHref(
@@ -1606,12 +1599,17 @@ async function loadPoolChart(range) {
         payoutWindowBand: { window: win },
         findStems: { finds: allFinds },
         legend: {
-          labels: { color: "#c5d0e6", boxWidth: 12 },
+          labels: {
+            color: "#c5d0e6",
+            boxWidth: 12,
+            usePointStyle: true,
+            pointStyle: "circle",
+          },
         },
         tooltip: {
           callbacks: {
             label(ctx) {
-              if (ctx.dataset.label === "In window" || ctx.dataset.label === "Older finds") {
+              if (ctx.dataset.label === "Block found" || ctx.dataset.label === "Older finds") {
                 const r = ctx.raw || {};
                 const nick = r.nickname ? ` · ${r.nickname}` : "";
                 const tag = r.in_window ? " (in window)" : "";
