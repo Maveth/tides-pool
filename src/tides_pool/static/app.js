@@ -509,7 +509,8 @@ function ensureCoinbaserOutlabelsPlugin() {
       const slices = cfg.slices;
       const total = cfg.total || 1;
       const gap = 16;
-      const items = [];
+      const leftFinal = [];
+      const rightFinal = [];
       for (let i = 0; i < meta.data.length; i++) {
         const arc = meta.data[i];
         const s = slices[i];
@@ -520,18 +521,15 @@ function ensureCoinbaserOutlabelsPlugin() {
         if (pct < 0.35 && s.kind === "other") continue;
         const cos = Math.cos(mid);
         const sin = Math.sin(mid);
-        // Default L/R by hemisphere. Bottom-center slices → right so they
-        // aren't clipped under the pie (e.g. Leviathan). Top-center → left.
-        let onRight = cos >= 0;
-        if (sin > 0.5 && Math.abs(cos) < 0.55) onRight = true;
-        if (sin < -0.5 && Math.abs(cos) < 0.55) onRight = false;
+        // Strict hemisphere: never cross the pie with a leader line.
+        const onRight = cos >= 0;
         const ax = arc.x + cos * arc.outerRadius;
         const ay = arc.y + sin * arc.outerRadius;
         const elbowR = arc.outerRadius + 16;
         const ex = arc.x + cos * elbowR;
         const ey = arc.y + sin * elbowR;
         const pctTxt = pct >= 1 ? pct.toFixed(1) : pct.toFixed(2);
-        items.push({
+        const item = {
           ax,
           ay,
           ex,
@@ -540,30 +538,9 @@ function ensureCoinbaserOutlabelsPlugin() {
           text: `${s.label} (${pctTxt}%)`,
           color: s.color,
           onRight,
-        });
+        };
+        (onRight ? rightFinal : leftFinal).push(item);
       }
-      // Balance: if one side is much heavier, flip bottom-most extras to the lighter side.
-      const left = items.filter((it) => !it.onRight);
-      const right = items.filter((it) => it.onRight);
-      if (left.length >= right.length + 2) {
-        left
-          .slice()
-          .sort((a, b) => b.y - a.y)
-          .slice(0, left.length - right.length - 1)
-          .forEach((it) => {
-            it.onRight = true;
-          });
-      } else if (right.length >= left.length + 3) {
-        right
-          .slice()
-          .sort((a, b) => a.y - b.y)
-          .slice(0, right.length - left.length - 1)
-          .forEach((it) => {
-            it.onRight = false;
-          });
-      }
-      const leftFinal = items.filter((it) => !it.onRight);
-      const rightFinal = items.filter((it) => it.onRight);
       const resolve = (arr, top, bottom) => {
         if (!arr.length) return;
         arr.sort((a, b) => a.y - b.y);
@@ -598,12 +575,14 @@ function ensureCoinbaserOutlabelsPlugin() {
       ctx.font = "600 12px system-ui, Segoe UI, sans-serif";
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
-      // Labels in layout padding. Leader lines stop at the inner text edge.
+      // Labels in layout padding. Paths stay outside the pie (no cross-chart diagonals).
       const labelGap = 8;
       const outerPad = 8;
       const drawSide = (arr, onRight) => {
         const colW = onRight ? chart.width - chartArea.right : chartArea.left;
         const maxTw = Math.max(40, colW - outerPad - labelGap - 4);
+        // Gutter just outside the doughnut — vertical runs stay here only.
+        const gutterX = onRight ? chartArea.right + 6 : chartArea.left - 6;
         for (const it of arr) {
           let text = it.text;
           let tw = ctx.measureText(text).width;
@@ -619,17 +598,20 @@ function ensureCoinbaserOutlabelsPlugin() {
           let lineEndX;
           if (onRight) {
             tx = chart.width - outerPad;
-            lineEndX = Math.max(chartArea.right + 6, tx - tw - labelGap);
+            lineEndX = Math.max(gutterX + 2, tx - tw - labelGap);
             ctx.textAlign = "right";
           } else {
             tx = outerPad;
-            lineEndX = Math.min(chartArea.left - 6, tx + tw + labelGap);
+            lineEndX = Math.min(gutterX - 2, tx + tw + labelGap);
             ctx.textAlign = "left";
           }
           ctx.strokeStyle = it.color || "rgba(180,180,180,0.75)";
           ctx.beginPath();
+          // Rim → radial stub → gutter at stub Y → gutter at label Y → text.
           ctx.moveTo(it.ax, it.ay);
           ctx.lineTo(it.ex, it.ey);
+          ctx.lineTo(gutterX, it.ey);
+          if (Math.abs(it.ey - it.y) > 0.5) ctx.lineTo(gutterX, it.y);
           ctx.lineTo(lineEndX, it.y);
           ctx.stroke();
           ctx.fillStyle = "#d5dbe6";
