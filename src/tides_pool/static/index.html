@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905pie8" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905contrib1" />
 </head>
 <body>
   <header class="top">
@@ -174,31 +174,32 @@
         <div>
           <h2>Contributors</h2>
           <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <strong>Total work</strong> is this window only — not lifetime.</p>
-          <p class="muted activity-legend">
-            <span class="activity-dot live" title="Shares in the last ~10 minutes"></span> hashing now
-            <span class="activity-dot idle" title="Work on this block, but quiet lately"></span> this block, idle
-            <span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span> no work this block
-            <span class="muted">· default = hashing now</span>
-          </p>
-          <p class="contrib-sort-bar muted" id="contribSortBar" hidden>
-            <label>Group by
-              <select id="contribGroup" class="contrib-sort-sel" title="Group matching nicknames">
-                <option value="">—</option>
-                <option value="nickname">Nickname</option>
-              </select>
-            </label>
-            <label>Sort by
-              <select id="contribSort" class="contrib-sort-sel" title="Sort rows or groups">
-                <option value="work">Total work</option>
-                <option value="address">Address</option>
-                <option value="nickname">Nickname</option>
-                <option value="shares">Shares</option>
-                <option value="this_block">This block</option>
-                <option value="hashrate">Hashrate</option>
-                <option value="pct">Payout %</option>
-              </select>
-            </label>
-          </p>
+          <div class="contrib-toolbar muted">
+            <div class="activity-legend">
+              <span class="activity-legend-item"><span class="activity-dot live" title="Shares in the last ~10 minutes"></span>hashing now</span>
+              <span class="activity-legend-item"><span class="activity-dot idle" title="Work on this block, but quiet lately"></span>this block, idle</span>
+              <span class="activity-legend-item"><span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span>no work this block</span>
+            </div>
+            <div class="contrib-sort-bar" id="contribSortBar" hidden>
+              <label>Group by
+                <select id="contribGroup" class="contrib-sort-sel" title="Group matching nicknames">
+                  <option value="">—</option>
+                  <option value="nickname">Nickname</option>
+                </select>
+              </label>
+              <label>Sort by
+                <select id="contribSort" class="contrib-sort-sel" title="Sort rows or groups">
+                  <option value="work">Total work</option>
+                  <option value="address">Address</option>
+                  <option value="nickname">Nickname</option>
+                  <option value="shares">Shares</option>
+                  <option value="this_block">This block</option>
+                  <option value="hashrate">Hashrate</option>
+                  <option value="pct">Payout %</option>
+                </select>
+              </label>
+            </div>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -356,6 +357,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905pie8" defer></script>
+  <script src="/static/app.js?v=20260905contrib1" defer></script>
 </body>
 </html>
