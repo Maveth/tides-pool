@@ -575,14 +575,12 @@ function ensureCoinbaserOutlabelsPlugin() {
       ctx.font = "600 12px system-ui, Segoe UI, sans-serif";
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
-      // Labels in layout padding. Paths stay outside the pie (no cross-chart diagonals).
+      // Labels in layout padding. Rim → short radial stub → one angled leg to text.
       const labelGap = 8;
       const outerPad = 8;
       const drawSide = (arr, onRight) => {
         const colW = onRight ? chart.width - chartArea.right : chartArea.left;
         const maxTw = Math.max(40, colW - outerPad - labelGap - 4);
-        // Gutter just outside the doughnut — vertical runs stay here only.
-        const gutterX = onRight ? chartArea.right + 6 : chartArea.left - 6;
         for (const it of arr) {
           let text = it.text;
           let tw = ctx.measureText(text).width;
@@ -598,20 +596,19 @@ function ensureCoinbaserOutlabelsPlugin() {
           let lineEndX;
           if (onRight) {
             tx = chart.width - outerPad;
-            lineEndX = Math.max(gutterX + 2, tx - tw - labelGap);
+            lineEndX = Math.max(chartArea.right + 8, tx - tw - labelGap);
             ctx.textAlign = "right";
           } else {
             tx = outerPad;
-            lineEndX = Math.min(gutterX - 2, tx + tw + labelGap);
+            lineEndX = Math.min(chartArea.left - 8, tx + tw + labelGap);
             ctx.textAlign = "left";
           }
           ctx.strokeStyle = it.color || "rgba(180,180,180,0.75)";
           ctx.beginPath();
-          // Rim → radial stub → gutter at stub Y → gutter at label Y → text.
+          // Rim → radial stub (first alignment) → single angled leg to label
+          // (replaces the old vertical gutter + horizontal that crossed names).
           ctx.moveTo(it.ax, it.ay);
           ctx.lineTo(it.ex, it.ey);
-          ctx.lineTo(gutterX, it.ey);
-          if (Math.abs(it.ey - it.y) > 0.5) ctx.lineTo(gutterX, it.y);
           ctx.lineTo(lineEndX, it.y);
           ctx.stroke();
           ctx.fillStyle = "#d5dbe6";
