@@ -508,9 +508,8 @@ function ensureCoinbaserOutlabelsPlugin() {
       const { ctx, chartArea } = chart;
       const slices = cfg.slices;
       const total = cfg.total || 1;
-      const gap = 15;
-      const left = [];
-      const right = [];
+      const gap = 16;
+      const items = [];
       for (let i = 0; i < meta.data.length; i++) {
         const arc = meta.data[i];
         const s = slices[i];
@@ -519,70 +518,127 @@ function ensureCoinbaserOutlabelsPlugin() {
         const pct = (100 * s.sats) / total;
         // Skip hairline slices for labels (still in tooltip / color).
         if (pct < 0.35 && s.kind === "other") continue;
-        const ax = arc.x + Math.cos(mid) * arc.outerRadius;
-        const ay = arc.y + Math.sin(mid) * arc.outerRadius;
-        const elbowR = arc.outerRadius + 14;
-        const ex = arc.x + Math.cos(mid) * elbowR;
-        const ey = arc.y + Math.sin(mid) * elbowR;
+        const cos = Math.cos(mid);
+        const sin = Math.sin(mid);
+        // Default L/R by hemisphere. Bottom-center slices → right so they
+        // aren't clipped under the pie (e.g. Leviathan). Top-center → left.
+        let onRight = cos >= 0;
+        if (sin > 0.5 && Math.abs(cos) < 0.55) onRight = true;
+        if (sin < -0.5 && Math.abs(cos) < 0.55) onRight = false;
+        const ax = arc.x + cos * arc.outerRadius;
+        const ay = arc.y + sin * arc.outerRadius;
+        const elbowR = arc.outerRadius + 16;
+        const ex = arc.x + cos * elbowR;
+        const ey = arc.y + sin * elbowR;
         const pctTxt = pct >= 1 ? pct.toFixed(1) : pct.toFixed(2);
-        const text = `${s.label} (${pctTxt}%)`;
-        const item = {
+        items.push({
           ax,
           ay,
           ex,
           ey,
           y: ey,
-          text,
+          text: `${s.label} (${pctTxt}%)`,
           color: s.color,
-          address: s.address || "",
-          onRight: Math.cos(mid) >= 0,
-        };
-        (item.onRight ? right : left).push(item);
+          onRight,
+        });
       }
+      // Balance: if one side is much heavier, flip bottom-most extras to the lighter side.
+      const left = items.filter((it) => !it.onRight);
+      const right = items.filter((it) => it.onRight);
+      if (left.length >= right.length + 2) {
+        left
+          .slice()
+          .sort((a, b) => b.y - a.y)
+          .slice(0, left.length - right.length - 1)
+          .forEach((it) => {
+            it.onRight = true;
+          });
+      } else if (right.length >= left.length + 3) {
+        right
+          .slice()
+          .sort((a, b) => a.y - b.y)
+          .slice(0, right.length - left.length - 1)
+          .forEach((it) => {
+            it.onRight = false;
+          });
+      }
+      const leftFinal = items.filter((it) => !it.onRight);
+      const rightFinal = items.filter((it) => it.onRight);
       const resolve = (arr, top, bottom) => {
+        if (!arr.length) return;
         arr.sort((a, b) => a.y - b.y);
+        const minY = top;
+        const maxY = bottom;
+        arr[0].y = Math.max(arr[0].y, minY);
         for (let i = 1; i < arr.length; i++) {
-          if (arr[i].y < arr[i - 1].y + gap) arr[i].y = arr[i - 1].y + gap;
+          arr[i].y = Math.max(arr[i].y, arr[i - 1].y + gap);
         }
-        if (arr.length) {
-          const overflow = arr[arr.length - 1].y - (bottom - 4);
-          if (overflow > 0) {
-            for (const it of arr) it.y -= overflow;
-          }
-          if (arr[0].y < top + 4) {
-            const shift = top + 4 - arr[0].y;
-            for (const it of arr) it.y += shift;
-          }
-          // Second pass after clamp.
-          for (let i = 1; i < arr.length; i++) {
-            if (arr[i].y < arr[i - 1].y + gap) arr[i].y = arr[i - 1].y + gap;
+        if (arr[arr.length - 1].y > maxY) {
+          const overflow = arr[arr.length - 1].y - maxY;
+          for (const it of arr) it.y -= overflow;
+        }
+        if (arr[0].y < minY || arr[arr.length - 1].y > maxY) {
+          // Evenly pack into available column height so nothing clips.
+          if (arr.length === 1) {
+            arr[0].y = Math.min(maxY, Math.max(minY, arr[0].y));
+          } else {
+            const span = Math.max(maxY - minY, gap * (arr.length - 1));
+            for (let i = 0; i < arr.length; i++) {
+              arr[i].y = minY + (span * i) / (arr.length - 1);
+            }
           }
         }
       };
-      resolve(left, chartArea.top, chartArea.bottom);
-      resolve(right, chartArea.top, chartArea.bottom);
+      // Use full canvas height — labels sit in side padding, not only chartArea.
+      const yTop = 10;
+      const yBot = chart.height - 10;
+      resolve(leftFinal, yTop, yBot);
+      resolve(rightFinal, yTop, yBot);
       ctx.save();
       ctx.font = "600 12px system-ui, Segoe UI, sans-serif";
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
+      // Labels in layout padding. Leader lines stop at the inner text edge.
+      const labelGap = 8;
+      const outerPad = 8;
       const drawSide = (arr, onRight) => {
+        const colW = onRight ? chart.width - chartArea.right : chartArea.left;
+        const maxTw = Math.max(40, colW - outerPad - labelGap - 4);
         for (const it of arr) {
-          const edgeX = onRight ? chartArea.right - 2 : chartArea.left + 2;
+          let text = it.text;
+          let tw = ctx.measureText(text).width;
+          if (tw > maxTw) {
+            // Truncate name so line + text fit the side column.
+            while (text.length > 4 && ctx.measureText(text).width > maxTw) {
+              text = text.slice(0, -2);
+            }
+            text = text.replace(/\s*\(?$/, "") + "…";
+            tw = ctx.measureText(text).width;
+          }
+          let tx;
+          let lineEndX;
+          if (onRight) {
+            tx = chart.width - outerPad;
+            lineEndX = Math.max(chartArea.right + 6, tx - tw - labelGap);
+            ctx.textAlign = "right";
+          } else {
+            tx = outerPad;
+            lineEndX = Math.min(chartArea.left - 6, tx + tw + labelGap);
+            ctx.textAlign = "left";
+          }
           ctx.strokeStyle = it.color || "rgba(180,180,180,0.75)";
           ctx.beginPath();
           ctx.moveTo(it.ax, it.ay);
           ctx.lineTo(it.ex, it.ey);
-          ctx.lineTo(edgeX, it.y);
+          ctx.lineTo(lineEndX, it.y);
           ctx.stroke();
           ctx.fillStyle = "#d5dbe6";
-          ctx.textAlign = onRight ? "right" : "left";
           ctx.textBaseline = "middle";
-          const tx = onRight ? edgeX - 4 : edgeX + 4;
-          ctx.fillText(it.text, tx, it.y);
+          ctx.fillText(text, tx, it.y);
         }
       };
-      drawSide(left, false);
-      drawSide(right, true);
+      drawSide(leftFinal, false);
+      drawSide(rightFinal, true);
       ctx.restore();
     },
   });
@@ -630,11 +686,11 @@ function paintCoinbaserPie(outs, rewardEst) {
       cutout: "48%",
       animation: false,
       layout: {
-        // Room for left/right leader-line labels (mempool-style).
+        // Side columns for labels + extra top/bottom so edge labels aren't clipped.
         padding: (() => {
           const narrow = typeof window !== "undefined" && window.innerWidth < 700;
-          const side = narrow ? 78 : 128;
-          return { top: 4, bottom: 4, left: side, right: side };
+          const side = narrow ? 86 : 140;
+          return { top: 28, bottom: 28, left: side, right: side };
         })(),
       },
       plugins: {
