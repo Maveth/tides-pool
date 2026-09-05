@@ -644,7 +644,7 @@ function paintCoinbaserPie(outs, rewardEst) {
   }
   if (wrap) wrap.hidden = false;
   const sig = coinbaserPieSignature(slices);
-  // Soft 30s refresh (and table expand re-render) must not thrash Chart.js.
+  // Soft refresh (and table expand re-render) must not thrash Chart.js.
   if (coinbaserPieObj && sig === coinbaserPieSig) return;
   coinbaserPieSig = sig;
   const total = slices.reduce((s, x) => s + x.sats, 0) || Number(rewardEst || 0) || 1;
@@ -2438,7 +2438,8 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
 
   refreshHealthStrip().catch((e) => console.error("health", e));
 
-  // Soft 30s refresh for the active dashboard view (paused when tab hidden).
+  // Soft 60s refresh for the active dashboard view (paused when tab hidden).
+  // Was 30s — web CPU spiked under multi-tab load; cache layer next.
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
     refreshHealthStrip().catch((e) => console.error("health", e));
@@ -2450,5 +2451,5 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
     } else {
       loadPool().catch((e) => console.error("refresh pool", e));
     }
-  }, 30000);
+  }, 60000);
 })();
