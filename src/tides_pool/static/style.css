@@ -248,9 +248,18 @@ tr.worker-sub td {
 }
 .contrib-sort-bar {
   margin: 0.35rem 0 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.9rem;
+  align-items: center;
 }
-.contrib-sort-bar select {
-  margin-left: 0.35rem;
+.contrib-sort-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.contrib-sort-bar select,
+.contrib-sort-sel {
   font: inherit;
   background: var(--panel, #1a1a1a);
   color: inherit;

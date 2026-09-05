@@ -386,6 +386,15 @@ const CONTRIB_SORT_OPTS = new Set([
   "hashrate",
   "pct",
 ]);
+const CONTRIB_SORT_LABELS = {
+  work: "Total work",
+  address: "Address",
+  nickname: "Nickname",
+  shares: "Shares",
+  this_block: "This block",
+  hashrate: "Hashrate",
+  pct: "Payout %",
+};
 function loadContribWorkerOpen() {
   try {
     return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_OPEN_KEY) || "[]"));
@@ -414,17 +423,32 @@ function saveContribNickOpen(set) {
     /* ignore */
   }
 }
-function loadContribSort() {
+function loadContribSortKeys() {
   try {
-    const v = sessionStorage.getItem(CONTRIB_SORT_KEY) || "work";
-    return CONTRIB_SORT_OPTS.has(v) ? v : "work";
+    const raw = sessionStorage.getItem(CONTRIB_SORT_KEY);
+    if (!raw) return ["work", "", ""];
+    // migrate old single-string value
+    if (raw[0] !== "[") {
+      const one = CONTRIB_SORT_OPTS.has(raw) ? raw : "work";
+      return [one, "", ""];
+    }
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return ["work", "", ""];
+    const keys = arr.map((v) => (CONTRIB_SORT_OPTS.has(v) ? v : "")).slice(0, 3);
+    while (keys.length < 3) keys.push("");
+    if (!keys[0]) keys[0] = "work";
+    // drop duplicates after primary
+    for (let i = 1; i < 3; i++) {
+      if (keys[i] && keys.slice(0, i).includes(keys[i])) keys[i] = "";
+    }
+    return keys;
   } catch {
-    return "work";
+    return ["work", "", ""];
   }
 }
-function saveContribSort(v) {
+function saveContribSortKeys(keys) {
   try {
-    sessionStorage.setItem(CONTRIB_SORT_KEY, v);
+    sessionStorage.setItem(CONTRIB_SORT_KEY, JSON.stringify(keys));
   } catch {
     /* ignore */
   }
@@ -445,7 +469,7 @@ function saveContribShowAll(on) {
 }
 let contribShowAll = loadContribShowAll();
 let contribLast = null;
-let contribSort = loadContribSort();
+let contribSortKeys = loadContribSortKeys();
 let contribWorkerOpen = loadContribWorkerOpen();
 let contribNickOpen = loadContribNickOpen();
 
@@ -454,36 +478,107 @@ function nickKey(c) {
   return n || "\0"; // empty nick sorts / groups last
 }
 
-function sortContributors(list, mode) {
-  const rows = list.slice();
-  const cmpStr = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" });
-  rows.sort((a, b) => {
-    switch (mode) {
-      case "address":
-        return cmpStr(String(a.address || ""), String(b.address || ""));
-      case "nickname": {
-        const ka = nickKey(a);
-        const kb = nickKey(b);
-        if (ka === "\0" && kb !== "\0") return 1;
-        if (kb === "\0" && ka !== "\0") return -1;
-        const c = cmpStr(ka === "\0" ? "" : ka, kb === "\0" ? "" : kb);
-        if (c !== 0) return c;
-        return cmpStr(String(a.address || ""), String(b.address || ""));
-      }
-      case "shares":
-        return Number(b.shares || 0) - Number(a.shares || 0);
-      case "this_block":
-        return Number(b.work_current || 0) - Number(a.work_current || 0);
-      case "hashrate":
-        return Number(b.hashrate_hs || 0) - Number(a.hashrate_hs || 0);
-      case "pct":
-        return Number(b.share_pct || 0) - Number(a.share_pct || 0);
-      case "work":
-      default:
-        return Number(b.work || 0) - Number(a.work || 0);
+function cmpContribByMode(a, b, mode) {
+  const cmpStr = (x, y) => x.localeCompare(y, undefined, { sensitivity: "base" });
+  switch (mode) {
+    case "address":
+      return cmpStr(String(a.address || ""), String(b.address || ""));
+    case "nickname": {
+      const ka = nickKey(a);
+      const kb = nickKey(b);
+      if (ka === "\0" && kb !== "\0") return 1;
+      if (kb === "\0" && ka !== "\0") return -1;
+      return cmpStr(ka === "\0" ? "" : ka, kb === "\0" ? "" : kb);
     }
+    case "shares":
+      return Number(b.shares || 0) - Number(a.shares || 0);
+    case "this_block":
+      return Number(b.work_current || 0) - Number(a.work_current || 0);
+    case "hashrate":
+      return Number(b.hashrate_hs || 0) - Number(a.hashrate_hs || 0);
+    case "pct":
+      return Number(b.share_pct || 0) - Number(a.share_pct || 0);
+    case "work":
+    default:
+      return Number(b.work || 0) - Number(a.work || 0);
+  }
+}
+
+function sortContributors(list, keys) {
+  const modes = (keys || []).filter((m) => CONTRIB_SORT_OPTS.has(m));
+  if (!modes.length) modes.push("work");
+  const rows = list.slice();
+  rows.sort((a, b) => {
+    for (const m of modes) {
+      const c = cmpContribByMode(a, b, m);
+      if (c !== 0) return c;
+    }
+    return cmpContribByMode(a, b, "address");
   });
   return rows;
+}
+
+function fillContribSortSelect(sel, { allowEmpty, selected, exclude }) {
+  if (!sel) return;
+  const ex = new Set(exclude || []);
+  const cur = selected || "";
+  const opts = [];
+  if (allowEmpty) opts.push(`<option value="">—</option>`);
+  for (const k of [
+    "work",
+    "address",
+    "nickname",
+    "shares",
+    "this_block",
+    "hashrate",
+    "pct",
+  ]) {
+    if (ex.has(k) && k !== cur) continue;
+    opts.push(
+      `<option value="${k}"${k === cur ? " selected" : ""}>${CONTRIB_SORT_LABELS[k]}</option>`
+    );
+  }
+  sel.innerHTML = opts.join("");
+  if (cur && CONTRIB_SORT_OPTS.has(cur)) sel.value = cur;
+  else if (allowEmpty) sel.value = "";
+  else sel.value = "work";
+}
+
+function wireContribSortBar() {
+  const s1 = document.getElementById("contribSort1");
+  const s2 = document.getElementById("contribSort2");
+  const s3 = document.getElementById("contribSort3");
+  if (!s1 || s1.dataset.wired) return;
+  const refreshOptions = () => {
+    const [a, b, c] = contribSortKeys;
+    fillContribSortSelect(s1, { allowEmpty: false, selected: a || "work", exclude: [] });
+    fillContribSortSelect(s2, {
+      allowEmpty: true,
+      selected: b || "",
+      exclude: [a].filter(Boolean),
+    });
+    fillContribSortSelect(s3, {
+      allowEmpty: true,
+      selected: c || "",
+      exclude: [a, b].filter(Boolean),
+    });
+  };
+  const onChange = () => {
+    const keys = [s1.value || "work", s2.value || "", s3.value || ""];
+    // clear dupes
+    for (let i = 1; i < 3; i++) {
+      if (keys[i] && keys.slice(0, i).includes(keys[i])) keys[i] = "";
+    }
+    contribSortKeys = keys;
+    saveContribSortKeys(keys);
+    refreshOptions();
+    renderContributors(contribLast);
+  };
+  refreshOptions();
+  s1.addEventListener("change", onChange);
+  s2.addEventListener("change", onChange);
+  s3.addEventListener("change", onChange);
+  s1.dataset.wired = "1";
 }
 
 function isContribLive(c) {
@@ -651,7 +746,6 @@ function renderContributors(contrib) {
   const cbody = document.getElementById("contribBody");
   const more = document.getElementById("contribMore");
   const sortBar = document.getElementById("contribSortBar");
-  const sortSel = document.getElementById("contribSort");
   if (!cbody) return;
   contribLast = Array.isArray(contrib) ? contrib : [];
   if (!contribLast.length) {
@@ -668,25 +762,17 @@ function renderContributors(contrib) {
   const showingAll = contribShowAll || restN <= 0;
   // Sort control only when the full window list is visible
   if (sortBar) sortBar.hidden = !showingAll;
-  if (sortSel && sortSel.value !== contribSort) sortSel.value = contribSort;
-  if (sortSel && !sortSel.dataset.wired) {
-    sortSel.dataset.wired = "1";
-    sortSel.addEventListener("change", () => {
-      const v = sortSel.value;
-      contribSort = CONTRIB_SORT_OPTS.has(v) ? v : "work";
-      saveContribSort(contribSort);
-      renderContributors(contribLast);
-    });
-  }
+  if (showingAll) wireContribSortBar();
 
   const baseRows = showingAll ? contribLast : live;
-  const mode = showingAll ? contribSort : "work";
-  const rows = sortContributors(baseRows, mode);
+  const keys = showingAll ? contribSortKeys : ["work"];
+  const rows = sortContributors(baseRows, keys);
+  const primary = (keys.find((k) => CONTRIB_SORT_OPTS.has(k)) || "work");
   // # = position in the currently displayed (sorted) list
   const parts = [];
   let displayIdx = 0;
 
-  if (showingAll && mode === "nickname") {
+  if (showingAll && primary === "nickname") {
     // Group consecutive same nickname; multi-member groups get a + header.
     const groups = [];
     for (const c of rows) {
