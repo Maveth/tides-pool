@@ -422,13 +422,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260905ref60"',
+        'src="/static/app.js?v=20260905bonus3"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260905ref60"',
+        'href="/static/style.css?v=20260905bonus3"',
         html,
         count=1,
     )
