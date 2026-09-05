@@ -2019,13 +2019,13 @@ async function loadPool() {
       )
     ),
     card(
-      "Finds",
+      "Block finds",
       cardSplitValue(
-        `<span title="Expected wait for next pool block at current pool hashrate (diff × 2³² / pool HR). Luck varies.">${fmtDuration(etaSec)}</span>`,
-        "Estimated",
+        `<span title="Estimated wait until the next pool block at current pool hashrate (diff × 2³² / pool HR). Luck varies.">${fmtDuration(etaSec)}</span>`,
+        "Next",
         `<span title="${String(lastFindTip).replace(/"/g, "&quot;")}">${lastAge}</span>`,
-        "last",
-        "Estimated time to next find · age of last find (no block heights)"
+        "Last",
+        "Estimated time to next pool block · age of last pool find"
       )
     ),
     card(
