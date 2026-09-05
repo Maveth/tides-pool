@@ -49,6 +49,39 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
   font-size: 0.85rem;
 }
+.fee-promo {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.45rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(61, 214, 198, 0.4);
+  background: rgba(61, 214, 198, 0.12);
+  color: #9eefe6;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.25;
+  max-width: min(420px, 100%);
+}
+.fee-promo strong {
+  color: #c6fff8;
+  font-weight: 700;
+}
+.fee-promo-aside {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.78rem;
+}
+@media (max-width: 720px) {
+  .fee-promo {
+    order: 5;
+    width: 100%;
+    max-width: none;
+    justify-content: center;
+    text-align: center;
+  }
+}
 .health-strip {
   display: inline-flex;
   align-items: center;
