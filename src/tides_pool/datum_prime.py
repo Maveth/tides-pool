@@ -1387,24 +1387,25 @@ class DatumPrimeSession:
             return
 
         self._pow_share_seq += 1
-        every = max(int(self.settings.pow_check_every), 1)
-        # Always audit blocks; sample 1/N regular shares for ntime skew.
-        do_extra = is_block or (self._pow_share_seq % every == 0)
-        if do_extra and not ntime_skew_ok(
-            ntime,
-            now=time.time(),
-            max_skew_sec=int(self.settings.share_ntime_max_skew_sec),
-        ):
-            await _send_reject(DATUM_REJECT_BAD_NTIME, "bad ntime")
-            await self.store.record_share_attempt(
-                address or username,
-                accepted=False,
-                reason_code=DATUM_REJECT_BAD_NTIME,
-                why="bad ntime",
-                worker=worker,
-                is_block=is_block,
-            )
-            return
+        # Optional ntime skew (default off — false-rejected real Gateways).
+        if bool(getattr(self.settings, "share_ntime_check", False)):
+            every = max(int(self.settings.pow_check_every), 1)
+            do_extra = is_block or (self._pow_share_seq % every == 0)
+            if do_extra and not ntime_skew_ok(
+                ntime,
+                now=time.time(),
+                max_skew_sec=int(self.settings.share_ntime_max_skew_sec),
+            ):
+                await _send_reject(DATUM_REJECT_BAD_NTIME, "bad ntime")
+                await self.store.record_share_attempt(
+                    address or username,
+                    accepted=False,
+                    reason_code=DATUM_REJECT_BAD_NTIME,
+                    why="bad ntime",
+                    worker=worker,
+                    is_block=is_block,
+                )
+                return
 
         # DATUM/Ocean convention: stratum username must be a payout address.
         # With Gateway "Pool Pass Full Users" (override address), a bare worker

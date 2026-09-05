@@ -69,7 +69,9 @@ class Settings(BaseSettings):
     # Cheap audit / future deep-PoW hook: run extra checks on 1/N shares (and
     # always on is_block). 1 = every share; 16–64 typical as the pool grows.
     pow_check_every: int = Field(default=16, ge=1, le=10_000)
-    # ntime skew window (seconds) for sampled/always-block checks.
+    # ntime skew check (sampled). Default off — false-rejected real ASICs.
+    share_ntime_check: bool = False
+    # ntime skew window (seconds) when share_ntime_check is enabled.
     share_ntime_max_skew_sec: int = Field(default=7200, ge=600, le=172800)
     network: str = "testnet4"
 
