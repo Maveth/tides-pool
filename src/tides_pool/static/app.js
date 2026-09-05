@@ -376,6 +376,8 @@ const COINBASER_TABLE_KEY = "tides_coinbaser_table_open";
 let coinbaserExpanded = false;
 let coinbaserLast = null;
 let coinbaserPieObj = null;
+/** Last pie fingerprint — skip Chart.js destroy/recreate on soft refresh when split is unchanged. */
+let coinbaserPieSig = "";
 let coinbaserTableOpen = (() => {
   try {
     return sessionStorage.getItem(COINBASER_TABLE_KEY) === "1";
@@ -453,6 +455,17 @@ function buildCoinbaserPieSlices(outs) {
   return slices.filter((s) => s.sats > 0);
 }
 
+function coinbaserPieSignature(slices) {
+  // Stable against tiny template reward wobble: compare who + share of pie (0.01% units).
+  const total = slices.reduce((s, x) => s + x.sats, 0) || 1;
+  return slices
+    .map((s) => {
+      const bp = Math.round((10000 * s.sats) / total);
+      return `${s.kind}:${s.address}:${s.label}:${bp}`;
+    })
+    .join("|");
+}
+
 function paintCoinbaserPie(outs, rewardEst) {
   const canvas = document.getElementById("coinbaserPie");
   if (!canvas) return;
@@ -461,10 +474,15 @@ function paintCoinbaserPie(outs, rewardEst) {
   const wrap = canvas.parentElement;
   if (!slices.length) {
     if (coinbaserPieObj) coinbaserPieObj = destroyChart(coinbaserPieObj);
+    coinbaserPieSig = "";
     if (wrap) wrap.hidden = true;
     return;
   }
   if (wrap) wrap.hidden = false;
+  const sig = coinbaserPieSignature(slices);
+  // Soft 30s refresh (and table expand re-render) must not thrash Chart.js.
+  if (coinbaserPieObj && sig === coinbaserPieSig) return;
+  coinbaserPieSig = sig;
   const total = slices.reduce((s, x) => s + x.sats, 0) || Number(rewardEst || 0) || 1;
   const labels = slices.map((s) => {
     const pct = (100 * s.sats) / total;
@@ -489,6 +507,7 @@ function paintCoinbaserPie(outs, rewardEst) {
       responsive: true,
       maintainAspectRatio: true,
       cutout: "52%",
+      animation: false,
       plugins: {
         legend: {
           position: "right",

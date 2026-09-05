@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -69,7 +69,7 @@ async def lifespan(_app: FastAPI):
             pg = PostgresStore(dsn)
             await pg.ensure_ready()
             store = pg
-        except Exception as exc:  # noqa: BLE001 — fall back for local/dev
+        except Exception as exc:  # noqa: BLE001 â€” fall back for local/dev
             print(f"postgres unavailable ({exc}); using MemoryStore")
             store = MemoryStore()
             await store.ensure_ready()
@@ -125,7 +125,7 @@ async def lifespan(_app: FastAPI):
             try:
                 import urllib.request
 
-                # Compose: tides-web → tides-prime:8080 (host maps that to :8089).
+                # Compose: tides-web â†’ tides-prime:8080 (host maps that to :8089).
                 prime_http = int(os.environ.get("TIDES_PRIME_HTTP_PORT", "8080"))
                 with urllib.request.urlopen(
                     f"http://{settings.prime_host}:{prime_http}/api/info",
@@ -245,7 +245,7 @@ async def _payout_window():
     """Shares in the live payout window: (N-1) confirmed finds + current.
 
     Cutoff is the share head of the Nth-last confirmed find; orphans do not count.
-    Use uncapped list_shares_after_cutoff — same source Prime coinbaser uses.
+    Use uncapped list_shares_after_cutoff â€” same source Prime coinbaser uses.
     (list_shares_newest(50k) drifted vs coinbaser once the window exceeded 50k rows.)
     """
     cutoff = await store.payout_window_cutoff_seq(settings.window_blocks)
@@ -274,7 +274,7 @@ async def _blocks_since(hours: float, *, limit: int = 500) -> tuple[int, int]:
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         if ts < cutoff:
-            # list_blocks is newest-first; older than window → stop
+            # list_blocks is newest-first; older than window â†’ stop
             break
         st = getattr(b, "status", None) or "confirmed"
         if st in ("orphaned", "misattributed"):
@@ -300,17 +300,17 @@ def _fmt_btc_html(sats: int) -> str:
 
 def _short_addr_html(addr: str) -> str:
     if not addr:
-        return "—"
+        return "â€”"
     if len(addr) <= 16:
         return addr
-    return f"{addr[:8]}…{addr[-6:]}"
+    return f"{addr[:8]}â€¦{addr[-6:]}"
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     if settings.normalized_role() == "prime":
         return HTMLResponse(
-            "<h1>tides-prime</h1><p>DATUM Prime process — UI is tides-web.</p>",
+            "<h1>tides-prime</h1><p>DATUM Prime process â€” UI is tides-web.</p>",
             status_code=200,
         )
     index_path = STATIC_DIR / "index.html"
@@ -322,13 +322,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260905fee"',
+        'src="/static/app.js?v=20260905pie2"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260905fee"',
+        'href="/static/style.css?v=20260905pie2"',
         html,
         count=1,
     )
@@ -337,18 +337,18 @@ async def index() -> HTMLResponse:
         cb = await _coinbaser_payload()
         outs = cb.outputs or []
         note = (
-            f"~{_fmt_btc_html(cb.reward_sats_estimate)} total · {len(outs)} payout line(s) "
-            f"· window work {cb.window_work:,}"
+            f"~{_fmt_btc_html(cb.reward_sats_estimate)} total Â· {len(outs)} payout line(s) "
+            f"Â· window work {cb.window_work:,}"
             if outs
-            else f"No miner lines yet (~{_fmt_btc_html(cb.reward_sats_estimate)}) — empty window pays ops only"
+            else f"No miner lines yet (~{_fmt_btc_html(cb.reward_sats_estimate)}) â€” empty window pays ops only"
         )
         if outs:
             rows = []
             for o in outs:
-                nm = (o.name or "—").replace("<", "&lt;")
+                nm = (o.name or "â€”").replace("<", "&lt;")
                 rows.append(
                     "<tr>"
-                    f"<td>{o.kind or '—'}</td>"
+                    f"<td>{o.kind or 'â€”'}</td>"
                     f"<td>{nm}</td>"
                     f'<td class="mono"><a href="/address?a={o.address}" title="{o.address}">'
                     f"{_short_addr_html(o.address)}</a></td>"
@@ -357,8 +357,8 @@ async def index() -> HTMLResponse:
                 )
             body = "\n".join(rows)
         else:
-            body = '<tr><td colspan="4" class="muted">No coinbaser outputs (empty window → ops only)</td></tr>'
-        # Match both empty note and legacy "Loading…" placeholders.
+            body = '<tr><td colspan="4" class="muted">No coinbaser outputs (empty window â†’ ops only)</td></tr>'
+        # Match both empty note and legacy "Loadingâ€¦" placeholders.
         html = _re.sub(
             r'id="coinbaserNote">[^<]*</p>',
             f'id="coinbaserNote">{note}</p>',
@@ -366,12 +366,12 @@ async def index() -> HTMLResponse:
             count=1,
         )
         html = html.replace(
-            '<tbody id="coinbaserBody"><tr><td colspan="3">Loading…</td></tr></tbody>',
+            '<tbody id="coinbaserBody"><tr><td colspan="3">Loadingâ€¦</td></tr></tbody>',
             f'<tbody id="coinbaserBody">{body}</tbody>',
             1,
         )
         html = html.replace(
-            '<tbody id="coinbaserBody"><tr><td colspan="4">Loading…</td></tr></tbody>',
+            '<tbody id="coinbaserBody"><tr><td colspan="4">Loadingâ€¦</td></tr></tbody>',
             f'<tbody id="coinbaserBody">{body}</tbody>',
             1,
         )
@@ -406,7 +406,7 @@ def _mask_ip(ip: str | None) -> str:
             return f"*.*.*.{parts[3]}"
         return "*.*.*.*"
     if ":" in s:
-        # IPv6 — keep last hextet
+        # IPv6 â€” keep last hextet
         core = s.split("%", 1)[0]
         if core.startswith("[") and "]" in core:
             core = core[1 : core.index("]")]
@@ -431,10 +431,10 @@ def _mask_gateway_uas(rows: list) -> list:
 @app.get("/health", response_model=HealthResponse)
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Real ops health — not a hard-coded ok.
+    """Real ops health â€” not a hard-coded ok.
 
     down: Prime not listening or DB unreachable
-    degraded: RPC bad, stale coinbaser cache, or recent outs≤1 while window active
+    degraded: RPC bad, stale coinbaser cache, or recent outsâ‰¤1 while window active
     ok: otherwise
     """
     warnings: list[str] = []
@@ -511,7 +511,7 @@ async def health() -> HealthResponse:
             warnings.append(f"coinbaser_meta_failed:{exc}")
             if status != "down" and role == "all":
                 status = "degraded"
-    # Public web helper only — Prime (:8089 / logs) keeps full peer IPs.
+    # Public web helper only â€” Prime (:8089 / logs) keeps full peer IPs.
     if role != "prime":
         if isinstance(cb.get("gateway_uas"), list):
             cb["gateway_uas"] = _mask_gateway_uas(cb.get("gateway_uas") or [])
@@ -554,7 +554,7 @@ async def health() -> HealthResponse:
             status = "degraded"
         warnings.append(f"coinbaser_p99_ms:{p99}")
 
-    # pool_pass_full_users misuse: miner username not a bc1… (reject 14)
+    # pool_pass_full_users misuse: miner username not a bc1â€¦ (reject 14)
     bad_1h = int(cb.get("bad_payout_rejects_1h") or 0)
     bad_total = int(cb.get("bad_payout_rejects_total") or 0)
     checks["bad_payout"] = {
@@ -623,14 +623,14 @@ async def stats() -> PoolStats:
         age_sec = max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
     pool_hs = estimate_hashrate_hs(recent_work, hr_window)
     diff_f = await _difficulty_float()
-    # Derived public metrics only — no raw RPC payloads / no RPC proxy.
+    # Derived public metrics only â€” no raw RPC payloads / no RPC proxy.
     net_hs = await _network_hashrate_hs()
     share_pct = (100.0 * pool_hs / net_hs) if net_hs > 0 and pool_hs > 0 else 0.0
     est_block: float | None = None
     if pool_hs > 0 and diff_f > 0:
         est_block = (diff_f * _DIFF1_HASHES) / pool_hs
-    # Window luck: finds after cutoff × network_diff / window_work.
-    # Expected blocks ≈ work/diff (Diff1 work units). 100% = expected.
+    # Window luck: finds after cutoff Ã— network_diff / window_work.
+    # Expected blocks â‰ˆ work/diff (Diff1 work units). 100% = expected.
     confirmed_for_luck = await store.list_confirmed_blocks(limit=settings.window_blocks)
     if cutoff is None:
         luck_finds = len(confirmed_for_luck)
@@ -774,7 +774,7 @@ _CHART_RANGES: dict[str, tuple[int, int]] = {
     "24h": (86400, 600),
     "7d": (7 * 86400, 3600),
     "1w": (7 * 86400, 3600),
-    # "window" is dynamic (payout period) — resolved in _chart_window()
+    # "window" is dynamic (payout period) â€” resolved in _chart_window()
 }
 
 
@@ -919,7 +919,7 @@ async def _network_hs_series(
             t += bsec
         return out, "samples"
 
-    # No history yet — flat tip so the axis still has a reference.
+    # No history yet â€” flat tip so the axis still has a reference.
     out = []
     t = start_i
     while t <= end_i:
@@ -943,7 +943,7 @@ async def charts_pool(range: str = Query("24h")) -> dict:
     nmap = await store.nicknames_for_addresses(
         [b.finder_address for b in brows if b.finder_address]
     )
-    # Payout window: shares after Nth-last confirmed find → (N-1) confirmed + current.
+    # Payout window: shares after Nth-last confirmed find â†’ (N-1) confirmed + current.
     n_win = max(int(settings.window_blocks or 8), 1)
     confirmed = await store.list_confirmed_blocks(limit=n_win)
     window_meta: dict | None = win_pre
@@ -1136,7 +1136,7 @@ async def _lifetime_tides_share_lines(address: str) -> list[UserPayoutOut]:
     confirmed = await store.list_confirmed_blocks(limit=500)
     if not confirmed:
         return []
-    # oldest → newest
+    # oldest â†’ newest
     blocks = list(reversed(confirmed))
     shares = await store.list_shares_newest(limit=200_000)
     n = max(int(settings.window_blocks or 8), 1)
@@ -1302,7 +1302,7 @@ async def user_payouts(
 ) -> list[UserPayoutOut]:
     """Reconstructed coinbase credits: TIDES share lines + finder bonuses."""
     tides = await _lifetime_tides_share_lines(address)
-    # Map height → block meta for finder rows
+    # Map height â†’ block meta for finder rows
     confirmed = await store.list_confirmed_blocks(limit=500)
     by_h = {int(b.height): b for b in confirmed}
     # Also peek recent (incl. pending) for hash/time when finder from_height is pending
@@ -1341,7 +1341,7 @@ async def user_payouts(
 
 
 def _display_worker(address: str, worker: str | None) -> str:
-    """Short worker label; strip address prefixes like addr.GPU0 → GPU0."""
+    """Short worker label; strip address prefixes like addr.GPU0 â†’ GPU0."""
     if not worker:
         return ""
     w = str(worker).strip()
@@ -1395,7 +1395,7 @@ def _worker_breaks_for_addr(
 
 
 async def _coinbaser_payload() -> CoinbaserResponse:
-    """Same split Gateways get from Prime — prefer CoinbaserSplitCache.
+    """Same split Gateways get from Prime â€” prefer CoinbaserSplitCache.
 
     Previously the website recalculated via _payout_window + reward_estimate
     while DATUM Gateways used coinbaser_cache.build_outs(template_value).
@@ -1463,7 +1463,7 @@ async def _coinbaser_payload() -> CoinbaserResponse:
     wbreak = await store.worker_breakdown_after_cutoff(
         cutoff, addresses=out_addrs, recent_sec=600
     )
-    # Fee 0%: no in-coinbase finder bonus — don't surface tides+finder on the site.
+    # Fee 0%: no in-coinbase finder bonus â€” don't surface tides+finder on the site.
     hide_finder_kind = int(getattr(settings, "fee_bps", 0) or 0) <= 0
     outputs: list[CoinbaseOutput] = []
     for o in raw:
@@ -1476,7 +1476,7 @@ async def _coinbaser_payload() -> CoinbaserResponse:
         if kind == "ops":
             name = "ops"
             # Ops fee line shares the pool_ops address with miner shares when
-            # hashrate also mined there — don't show that miner nickname here.
+            # hashrate also mined there â€” don't show that miner nickname here.
             nick = "OPERATION FEE"
         else:
             workers = _worker_breaks_for_addr(addr, wbreak, sats_total=sats)
@@ -1484,7 +1484,7 @@ async def _coinbaser_payload() -> CoinbaserResponse:
                 if len(workers) == 1:
                     name = workers[0].worker
                 else:
-                    name = " · ".join(w.worker for w in workers[:4])
+                    name = " Â· ".join(w.worker for w in workers[:4])
                     if len(workers) > 4:
                         name += f" +{len(workers) - 4}"
             else:
@@ -1636,7 +1636,7 @@ async def info(request: Request) -> dict:
             "pool_port": settings.datum_prime_port,
             "pool_pubkey": _pool_pubkey_hex,
             "pool_pubkey_optional_if_autofetch": True,
-            "note": "REQUIRED: run your own Knots Blake node and point DATUM bitcoind RPC at it — without that, DATUM stays not ready even if Prime connects. Prefer Leo StartOS pow_0.4.1_18+ / Umbrel Bitcoin-store DATUM (blake2b); experimental MaVeTh pow_0.4.1_20 also works. Then point DATUM pool_host here (miners → your DATUM Stratum, not :28916). Paste pool_pubkey if your build does not auto-fetch. Set mining.pool_address to your mainnet bc1…/1… payout.",
+            "note": "REQUIRED: run your own Knots Blake node and point DATUM bitcoind RPC at it â€” without that, DATUM stays not ready even if Prime connects. Prefer Leo StartOS pow_0.4.1_18+ / Umbrel Bitcoin-store DATUM (blake2b); experimental MaVeTh pow_0.4.1_20 also works. Then point DATUM pool_host here (miners â†’ your DATUM Stratum, not :28916). Paste pool_pubkey if your build does not auto-fetch. Set mining.pool_address to your mainnet bc1â€¦/1â€¦ payout.",
         },
     }
 
