@@ -318,16 +318,27 @@ tr.nick-sub td {
   background: rgba(255,255,255,0.02);
 }
 .coinbaser-pie-wrap {
-  max-width: 420px;
-  margin: 0.75rem auto 0.5rem;
+  /* Full panel width — room for mempool-style left/right leader labels. */
+  width: 100%;
+  max-width: none;
+  margin: 0.35rem 0 0.35rem;
   position: relative;
-  min-height: 260px;
+  height: 320px;
+  padding: 0;
 }
 @media (min-width: 900px) {
   .coinbaser-pie-wrap {
-    max-width: 480px;
-    min-height: 300px;
+    height: 360px;
   }
+}
+@media (max-width: 640px) {
+  .coinbaser-pie-wrap {
+    height: 280px;
+  }
+}
+.coinbaser-pie-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
 }
 .worker-chart-filters {
   display: flex;

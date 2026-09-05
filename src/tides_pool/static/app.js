@@ -371,13 +371,17 @@ const KIND_ICO = {
 };
 
 const COINBASER_TOP_N = 12;
-const COINBASER_PIE_TOP = 10;
+/** Named pie slices: keep anyone ≥ this % (mempool-like); tiny remainder → Other. */
+const COINBASER_PIE_MIN_PCT = 0.5;
+/** Hard cap so leader-line labels stay readable. */
+const COINBASER_PIE_MAX = 18;
 const COINBASER_TABLE_KEY = "tides_coinbaser_table_open";
 let coinbaserExpanded = false;
 let coinbaserLast = null;
 let coinbaserPieObj = null;
 /** Last pie fingerprint — skip Chart.js destroy/recreate on soft refresh when split is unchanged. */
 let coinbaserPieSig = "";
+let coinbaserOutlabelsRegistered = false;
 let coinbaserTableOpen = (() => {
   try {
     return sessionStorage.getItem(COINBASER_TABLE_KEY) === "1";
@@ -406,6 +410,14 @@ const COINBASER_PIE_COLORS = [
   "#577590",
   "#43aa8b",
   "#f94144",
+  "#277da1",
+  "#f8961e",
+  "#90e0ef",
+  "#b5179e",
+  "#80ed99",
+  "#ff6b6b",
+  "#4cc9f0",
+  "#ffd166",
 ];
 
 function coinbaserSliceLabel(o) {
@@ -425,9 +437,26 @@ function buildCoinbaserPieSlices(outs) {
     else miners.push(o);
   }
   miners.sort((a, b) => Number(b.sats || 0) - Number(a.sats || 0));
-  const top = miners.slice(0, COINBASER_PIE_TOP);
-  const rest = miners.slice(COINBASER_PIE_TOP);
-  const slices = top.map((o, i) => ({
+  const minerTot = miners.reduce((s, o) => s + Number(o.sats || 0), 0) || 1;
+  const named = [];
+  const rest = [];
+  for (const o of miners) {
+    const sats = Number(o.sats || 0);
+    const pct = (100 * sats) / minerTot;
+    if (named.length < COINBASER_PIE_MAX && pct >= COINBASER_PIE_MIN_PCT) named.push(o);
+    else rest.push(o);
+  }
+  // If threshold left almost everyone in Other, still show a fuller top-N.
+  if (named.length < 12 && miners.length > named.length) {
+    const keep = Math.min(COINBASER_PIE_MAX, 16);
+    named.length = 0;
+    rest.length = 0;
+    for (let i = 0; i < miners.length; i++) {
+      if (i < keep) named.push(miners[i]);
+      else rest.push(miners[i]);
+    }
+  }
+  const slices = named.map((o, i) => ({
     label: coinbaserSliceLabel(o),
     sats: Number(o.sats || 0),
     address: o.address || "",
@@ -466,10 +495,105 @@ function coinbaserPieSignature(slices) {
     .join("|");
 }
 
+/** Mempool-style edge labels + leader lines (left/right), no side legend. */
+function ensureCoinbaserOutlabelsPlugin() {
+  if (coinbaserOutlabelsRegistered || typeof Chart === "undefined") return;
+  Chart.register({
+    id: "coinbaserOutlabels",
+    afterDatasetsDraw(chart) {
+      const cfg = chart.options.plugins && chart.options.plugins.coinbaserOutlabels;
+      if (!cfg || !cfg.slices || !cfg.slices.length) return;
+      const meta = chart.getDatasetMeta(0);
+      if (!meta || !meta.data || !meta.data.length) return;
+      const { ctx, chartArea } = chart;
+      const slices = cfg.slices;
+      const total = cfg.total || 1;
+      const gap = 15;
+      const left = [];
+      const right = [];
+      for (let i = 0; i < meta.data.length; i++) {
+        const arc = meta.data[i];
+        const s = slices[i];
+        if (!arc || !s || !(arc.outerRadius > 0)) continue;
+        const mid = (arc.startAngle + arc.endAngle) / 2;
+        const pct = (100 * s.sats) / total;
+        // Skip hairline slices for labels (still in tooltip / color).
+        if (pct < 0.35 && s.kind === "other") continue;
+        const ax = arc.x + Math.cos(mid) * arc.outerRadius;
+        const ay = arc.y + Math.sin(mid) * arc.outerRadius;
+        const elbowR = arc.outerRadius + 14;
+        const ex = arc.x + Math.cos(mid) * elbowR;
+        const ey = arc.y + Math.sin(mid) * elbowR;
+        const pctTxt = pct >= 1 ? pct.toFixed(1) : pct.toFixed(2);
+        const text = `${s.label} (${pctTxt}%)`;
+        const item = {
+          ax,
+          ay,
+          ex,
+          ey,
+          y: ey,
+          text,
+          color: s.color,
+          address: s.address || "",
+          onRight: Math.cos(mid) >= 0,
+        };
+        (item.onRight ? right : left).push(item);
+      }
+      const resolve = (arr, top, bottom) => {
+        arr.sort((a, b) => a.y - b.y);
+        for (let i = 1; i < arr.length; i++) {
+          if (arr[i].y < arr[i - 1].y + gap) arr[i].y = arr[i - 1].y + gap;
+        }
+        if (arr.length) {
+          const overflow = arr[arr.length - 1].y - (bottom - 4);
+          if (overflow > 0) {
+            for (const it of arr) it.y -= overflow;
+          }
+          if (arr[0].y < top + 4) {
+            const shift = top + 4 - arr[0].y;
+            for (const it of arr) it.y += shift;
+          }
+          // Second pass after clamp.
+          for (let i = 1; i < arr.length; i++) {
+            if (arr[i].y < arr[i - 1].y + gap) arr[i].y = arr[i - 1].y + gap;
+          }
+        }
+      };
+      resolve(left, chartArea.top, chartArea.bottom);
+      resolve(right, chartArea.top, chartArea.bottom);
+      ctx.save();
+      ctx.font = "600 12px system-ui, Segoe UI, sans-serif";
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = "round";
+      const drawSide = (arr, onRight) => {
+        for (const it of arr) {
+          const edgeX = onRight ? chartArea.right - 2 : chartArea.left + 2;
+          ctx.strokeStyle = it.color || "rgba(180,180,180,0.75)";
+          ctx.beginPath();
+          ctx.moveTo(it.ax, it.ay);
+          ctx.lineTo(it.ex, it.ey);
+          ctx.lineTo(edgeX, it.y);
+          ctx.stroke();
+          ctx.fillStyle = "#d5dbe6";
+          ctx.textAlign = onRight ? "right" : "left";
+          ctx.textBaseline = "middle";
+          const tx = onRight ? edgeX - 4 : edgeX + 4;
+          ctx.fillText(it.text, tx, it.y);
+        }
+      };
+      drawSide(left, false);
+      drawSide(right, true);
+      ctx.restore();
+    },
+  });
+  coinbaserOutlabelsRegistered = true;
+}
+
 function paintCoinbaserPie(outs, rewardEst) {
   const canvas = document.getElementById("coinbaserPie");
   if (!canvas) return;
   if (!chartReady()) return;
+  ensureCoinbaserOutlabelsPlugin();
   const slices = buildCoinbaserPieSlices(outs);
   const wrap = canvas.parentElement;
   if (!slices.length) {
@@ -484,10 +608,7 @@ function paintCoinbaserPie(outs, rewardEst) {
   if (coinbaserPieObj && sig === coinbaserPieSig) return;
   coinbaserPieSig = sig;
   const total = slices.reduce((s, x) => s + x.sats, 0) || Number(rewardEst || 0) || 1;
-  const labels = slices.map((s) => {
-    const pct = (100 * s.sats) / total;
-    return `${s.label} (${pct >= 1 ? pct.toFixed(1) : pct.toFixed(2)}%)`;
-  });
+  const labels = slices.map((s) => s.label);
   coinbaserPieObj = destroyChart(coinbaserPieObj);
   coinbaserPieObj = new Chart(canvas.getContext("2d"), {
     type: "doughnut",
@@ -497,27 +618,28 @@ function paintCoinbaserPie(outs, rewardEst) {
         {
           data: slices.map((s) => s.sats),
           backgroundColor: slices.map((s) => s.color),
-          borderColor: "rgba(0,0,0,0.35)",
-          borderWidth: 1,
-          hoverOffset: 6,
+          borderColor: "rgba(11, 18, 32, 0.95)",
+          borderWidth: 1.5,
+          hoverOffset: 4,
         },
       ],
     },
     options: {
       responsive: true,
-      maintainAspectRatio: true,
-      cutout: "52%",
+      maintainAspectRatio: false,
+      cutout: "48%",
       animation: false,
+      layout: {
+        // Room for left/right leader-line labels (mempool-style).
+        padding: (() => {
+          const narrow = typeof window !== "undefined" && window.innerWidth < 700;
+          const side = narrow ? 78 : 128;
+          return { top: 4, bottom: 4, left: side, right: side };
+        })(),
+      },
       plugins: {
-        legend: {
-          position: "right",
-          labels: {
-            boxWidth: 12,
-            boxHeight: 12,
-            font: { size: 11 },
-            color: "#c8c8c8",
-          },
-        },
+        legend: { display: false },
+        coinbaserOutlabels: { slices, total },
         tooltip: {
           callbacks: {
             label(ctx) {
