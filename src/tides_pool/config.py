@@ -58,6 +58,19 @@ class Settings(BaseSettings):
 
     # Share validation / DATUM configure override_vardiff_min
     min_share_difficulty: float = 4.0
+    # Cap claimed share difficulty (PoT). Stops work inflation via huge target_byte.
+    # Non-block shares with target_byte above this are rejected (BAD_TARGET).
+    # Blocks (is_block) may use up to share_target_byte_max_block.
+    # 28 → work 2^28 ≈ 268M Diff1 units (well above typical vardiff shares).
+    share_target_byte_max: int = Field(default=28, ge=8, le=62)
+    share_target_byte_max_block: int = Field(default=48, ge=8, le=62)
+    # Hard ceiling on credited Diff1 work per share (0 = 1<<share_target_byte_max).
+    share_work_max: int = Field(default=0, ge=0)
+    # Cheap audit / future deep-PoW hook: run extra checks on 1/N shares (and
+    # always on is_block). 1 = every share; 16–64 typical as the pool grows.
+    pow_check_every: int = Field(default=16, ge=1, le=10_000)
+    # ntime skew window (seconds) for sampled/always-block checks.
+    share_ntime_max_skew_sec: int = Field(default=7200, ge=600, le=172800)
     network: str = "testnet4"
 
     # Per-address work cap (0 multiplier = disabled → normal pool, full ASIC credit)
@@ -125,6 +138,21 @@ class Settings(BaseSettings):
         raw = work_per_sec * self.address_work_cap_window_sec * self.address_work_cap_multiplier
         return max(int(raw), 1)
 
+    def share_target_byte_min(self) -> int:
+        """Minimum PoT byte implied by min_share_difficulty (floor log2)."""
+        d = max(float(self.min_share_difficulty), 1.0)
+        # smallest k with 2^k >= d
+        k = 0
+        v = 1.0
+        while v < d and k < 62:
+            k += 1
+            v *= 2.0
+        return k
+
+    def share_work_ceiling(self) -> int:
+        if self.share_work_max > 0:
+            return int(self.share_work_max)
+        return 1 << int(self.share_target_byte_max)
 
 
 

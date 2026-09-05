@@ -53,9 +53,63 @@ def _ua_wants_configure_v3(ua: str) -> bool:
     return any(m in u for m in markers)
 
 
+def share_work_from_target_byte(
+    target_byte: int,
+    *,
+    min_share_difficulty: float,
+    work_ceiling: int,
+) -> int:
+    """Diff1 work units from PoT byte, clamped to ceiling."""
+    if target_byte == 0xFF:
+        work = max(int(min_share_difficulty), 4)
+    elif 0 <= int(target_byte) <= 62:
+        work = 1 << int(target_byte)
+    else:
+        work = 0
+    return min(int(work), int(work_ceiling)) if work_ceiling > 0 else int(work)
+
+
+def target_byte_allowed(
+    target_byte: int,
+    *,
+    is_block: bool,
+    min_tb: int,
+    max_tb_share: int,
+    max_tb_block: int,
+) -> bool:
+    """True if Gateway-claimed PoT is in the allowed band."""
+    if target_byte == 0xFF:
+        return True
+    tb = int(target_byte)
+    if tb < 0 or tb > 62:
+        return False
+    if tb < int(min_tb):
+        return False
+    lim = int(max_tb_block) if is_block else int(max_tb_share)
+    return tb <= lim
+
+
+def ntime_skew_ok(ntime: int, *, now: float, max_skew_sec: int) -> bool:
+    """Reject absurd clocks; generous window so we don't false-reject ASICs."""
+    try:
+        nt = int(ntime)
+    except (TypeError, ValueError):
+        return False
+    skew = int(max_skew_sec)
+    # too far in the future
+    if nt > int(now) + skew:
+        return False
+    # too old (2× skew back)
+    if nt < int(now) - (skew * 2):
+        return False
+    return True
+
+
 # DATUM reject reason codes (protocol)
 DATUM_REJECT_BAD_COINBASE_ID = 11
+DATUM_REJECT_BAD_TARGET = 13
 DATUM_REJECT_BAD_USERNAME = 14
+DATUM_REJECT_BAD_NTIME = 23
 DATUM_REJECT_BAD_COINBASE_OUTPUTS = 27
 DATUM_REJECT_OTHER = 30
 
@@ -740,6 +794,8 @@ class DatumPrimeSession:
             self.peer_port = 0
         self.peer_key = f"{self.peer_ip}:{self.peer_port}"
         self.client_ua = ""
+        # Per-session share counter for sampled pow_check_every audits.
+        self._pow_share_seq = 0
 
     def _remember_coinbaser(self, cid: int, n_value_outs: int) -> None:
         self.recent_coinbasers[cid & 0xFF] = {"n_value_outs": int(n_value_outs)}
@@ -1249,6 +1305,7 @@ class DatumPrimeSession:
         is_block = bool(flags & FLAG_IS_BLOCK)
         subsidy_only = bool(flags & FLAG_SUBSIDY_ONLY) or coinbase_id == 0xFF
         target_byte = msg[4]
+        ntime = struct.unpack_from("<I", msg, 5)[0]
         nonce = struct.unpack_from("<I", msg, 9)[0]
         # username C-string at offset 30
         rest = msg[30:]
@@ -1259,36 +1316,80 @@ class DatumPrimeSession:
 
         def _reject(reason: int, why: str) -> None:
             log.warning(
-                "share REJECT %s user=%r coinbase_id=%s flags=%02x nonce=%08x block=%s peer=%s ua=%r",
+                "share REJECT %s user=%r coinbase_id=%s flags=%02x target=%s nonce=%08x block=%s peer=%s ua=%r",
                 why,
                 username,
                 coinbase_id,
                 flags,
+                target_byte,
                 nonce,
                 is_block,
                 self.peer_key,
                 self.client_ua or "(unknown)",
             )
 
+        async def _send_reject(reason: int, why: str) -> None:
+            _reject(reason, why)
+            resp = bytearray()
+            resp.append(0x8F)
+            resp.append(DATUM_POW_REJECTED)
+            resp.extend(struct.pack("<H", reason))
+            resp.extend(struct.pack("<I", nonce))
+            resp.append(target_byte & 0xFF)
+            resp.append(job_id & 0xFF)
+            await self.send_channel(bytes(resp), signed=False)
+
+        # --- Always-on cheap checks (every share): claimed PoT / work band ---
+        min_tb = self.settings.share_target_byte_min()
+        if not target_byte_allowed(
+            target_byte,
+            is_block=is_block,
+            min_tb=min_tb,
+            max_tb_share=self.settings.share_target_byte_max,
+            max_tb_block=self.settings.share_target_byte_max_block,
+        ):
+            await _send_reject(DATUM_REJECT_BAD_TARGET, "bad target_byte")
+            await self.store.record_share_attempt(
+                address or username,
+                accepted=False,
+                reason_code=DATUM_REJECT_BAD_TARGET,
+                why="bad target_byte",
+                worker=worker,
+                is_block=is_block,
+            )
+            return
+
+        self._pow_share_seq += 1
+        every = max(int(self.settings.pow_check_every), 1)
+        # Always audit blocks; sample 1/N regular shares for ntime skew.
+        do_extra = is_block or (self._pow_share_seq % every == 0)
+        if do_extra and not ntime_skew_ok(
+            ntime,
+            now=time.time(),
+            max_skew_sec=int(self.settings.share_ntime_max_skew_sec),
+        ):
+            await _send_reject(DATUM_REJECT_BAD_NTIME, "bad ntime")
+            await self.store.record_share_attempt(
+                address or username,
+                accepted=False,
+                reason_code=DATUM_REJECT_BAD_NTIME,
+                why="bad ntime",
+                worker=worker,
+                is_block=is_block,
+            )
+            return
+
         # DATUM/Ocean convention: stratum username must be a payout address.
         # With Gateway "Pool Pass Full Users" (override address), a bare worker
         # name like "rig1" lands here and cannot be remapped — we never see
         # mining.pool_address on the share wire.
         if not is_valid_payout_address(address):
-            _reject(DATUM_REJECT_BAD_USERNAME, "bad payout address")
+            await _send_reject(DATUM_REJECT_BAD_USERNAME, "bad payout address")
             try:
                 self.coinbaser_cache.note_bad_payout_username(username)
                 self.coinbaser_cache.note_reject_ua(self.client_ua, kind="bad_payout")
             except Exception:  # noqa: BLE001
                 pass
-            resp = bytearray()
-            resp.append(0x8F)
-            resp.append(DATUM_POW_REJECTED)
-            resp.extend(struct.pack("<H", DATUM_REJECT_BAD_USERNAME))
-            resp.extend(struct.pack("<I", nonce))
-            resp.append(target_byte & 0xFF)
-            resp.append(job_id & 0xFF)
-            await self.send_channel(bytes(resp), signed=False)
             return
 
         # When we assigned a multi-out split, refuse empty/type-0/subsidy-only work for credit.
@@ -1493,10 +1594,14 @@ class DatumPrimeSession:
         after_user = 30 + (nul + 1 if nul >= 0 else len(rest)) + 4  # username + NUL + 4 reserved
         tlv_height, tlv_value = self._parse_pow_job_meta(msg, after_user)
 
-        if target_byte == 0xFF:
-            work = max(int(self.settings.min_share_difficulty), 4)
-        else:
-            work = 1 << int(target_byte)
+        work = share_work_from_target_byte(
+            target_byte,
+            min_share_difficulty=float(self.settings.min_share_difficulty),
+            work_ceiling=self.settings.share_work_ceiling(),
+        )
+        if work <= 0:
+            await _send_reject(DATUM_REJECT_BAD_TARGET, "zero work")
+            return
 
         try:
             # Optional per-address work cap. multiplier<=0 → normal pool (full credit).
