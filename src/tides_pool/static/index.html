@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905pie2" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905fee2" />
 </head>
 <body>
   <header class="top">
@@ -12,10 +12,6 @@
       <a href="/">RIPTIDE</a>
       <span class="tag">mainnet · Blake2b · DATUM-only</span>
     </div>
-    <span class="fee-promo" title="Pool fee is currently zero">
-      Currently <strong>0% fees</strong>
-      <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
-    </span>
     <a id="healthStrip" class="health-strip health-unknown" href="/health" title="Pool / Prime health">…</a>
     <form id="lookup" class="lookup" action="/address" method="get">
       <input name="a" id="addrInput" type="text" placeholder="Lookup payout address…" autocomplete="off" spellcheck="false" />
@@ -25,6 +21,10 @@
 
   <main>
     <section id="poolView">
+      <div class="fee-promo" title="Pool fee is currently zero" role="status">
+        <span class="fee-promo-main">Currently <strong>0% fees</strong></span>
+        <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
+      </div>
       <h1>RIPTIDE dashboard</h1>
       <p class="muted">Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
 
@@ -335,6 +335,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905pie2" defer></script>
+  <script src="/static/app.js?v=20260905fee2" defer></script>
 </body>
 </html>

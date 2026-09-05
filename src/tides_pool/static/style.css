@@ -50,36 +50,46 @@ a:hover { text-decoration: underline; }
   font-size: 0.85rem;
 }
 .fee-promo {
-  display: inline-flex;
+  display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.25rem 0.45rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  border: 1px solid rgba(61, 214, 198, 0.4);
-  background: rgba(61, 214, 198, 0.12);
-  color: #9eefe6;
-  font-size: 0.82rem;
-  font-weight: 600;
-  line-height: 1.25;
-  max-width: min(420px, 100%);
+  justify-content: center;
+  gap: 0.35rem 0.75rem;
+  margin: 0 0 1.1rem;
+  padding: 0.85rem 1.15rem;
+  border-radius: 12px;
+  border: 1px solid rgba(61, 214, 198, 0.45);
+  background: linear-gradient(135deg, rgba(61, 214, 198, 0.18), rgba(91, 141, 239, 0.1));
+  color: #b8f7ef;
+  text-align: center;
+  line-height: 1.35;
+}
+.fee-promo-main {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 .fee-promo strong {
-  color: #c6fff8;
-  font-weight: 700;
+  color: #e7fffb;
+  font-weight: 800;
+  font-size: 1.15em;
 }
 .fee-promo-aside {
   color: var(--muted);
   font-weight: 500;
-  font-size: 0.78rem;
+  font-size: 1.05rem;
 }
 @media (max-width: 720px) {
   .fee-promo {
-    order: 5;
+    padding: 0.75rem 0.9rem;
+  }
+  .fee-promo-main {
+    font-size: 1.2rem;
     width: 100%;
-    max-width: none;
-    justify-content: center;
-    text-align: center;
+  }
+  .fee-promo-aside {
+    font-size: 0.95rem;
+    width: 100%;
   }
 }
 .health-strip {
