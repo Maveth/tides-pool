@@ -25,6 +25,7 @@ _DIFF1_HASHES = float(1 << 32)
 from tides_pool.models import (
     BlockOut,
     CoinbaseOutput,
+    WorkerBreak,
     CoinbaserResponse,
     Contributor,
     HealthResponse,
@@ -300,13 +301,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260904collapse"',
+        'src="/static/app.js?v=20260905workers"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260904collapse"',
+        'href="/static/style.css?v=20260905workers"',
         html,
         count=1,
     )
@@ -707,6 +708,17 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
         if fa:
             finds_by_addr[fa] = finds_by_addr.get(fa, 0) + 1
     diff = await _difficulty()
+    wbreak = await store.worker_breakdown_after_cutoff(
+        cutoff, addresses=addrs, recent_sec=hr_window
+    )
+    sats_by_addr: dict[str, int] = {}
+    try:
+        cb = await _coinbaser_payload()
+        for o in cb.outputs or []:
+            if o.address:
+                sats_by_addr[o.address] = int(o.sats or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("contrib coinbaser sats attach failed: %s", exc)
     out: list[Contributor] = []
     for r in rows:
         q = qmap.get(r["address"])
@@ -716,6 +728,9 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
         luck: float | None = None
         if n_finds > 0 and work > 0 and diff > 0:
             luck = round(100.0 * n_finds * float(diff) / float(work), 2)
+        workers = _worker_breaks_for_addr(
+            addr, wbreak, sats_total=sats_by_addr.get(addr)
+        )
         out.append(
             Contributor(
                 **r,
@@ -724,6 +739,7 @@ async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor
                 nickname=nmap.get(addr),
                 luck_pct=luck,
                 luck_finds=n_finds,
+                workers=workers,
             )
         )
     return out
@@ -988,6 +1004,26 @@ async def charts_user(address: str, range: str = Query("24h")) -> dict:
         start=start, end=end, bucket_sec=bucket_sec, address=address
     )
     hashrate = _fill_hs_series(buckets, start=start, end=end, bucket_sec=bucket_sec)
+    # Per-worker series for miner chart toggles
+    cutoff = await store.payout_window_cutoff_seq(settings.window_blocks)
+    wbreak = await store.worker_breakdown_after_cutoff(
+        cutoff, addresses=[address], recent_sec=600
+    )
+    worker_names = [str(w.get("worker") or "") for w in (wbreak.get(address) or [])]
+    # Also include any workers seen in the chart window (not only payout window)
+    hashrate_by_worker: dict[str, list] = {}
+    for wname in worker_names:
+        label = _display_worker(address, wname) or wname
+        wb = await store.share_work_buckets(
+            start=start,
+            end=end,
+            bucket_sec=bucket_sec,
+            address=address,
+            worker=wname,
+        )
+        hashrate_by_worker[label] = _fill_hs_series(
+            wb, start=start, end=end, bucket_sec=bucket_sec
+        )
     brows = await store.list_blocks_between(start=start, end=end, limit=500)
     mine = [b for b in brows if (b.finder_address or "") == address]
     workers = await store.finder_workers_for_blocks(mine)
@@ -1016,6 +1052,8 @@ async def charts_user(address: str, range: str = Query("24h")) -> dict:
         "range_sec": range_sec,
         "bucket_sec": bucket_sec,
         "hashrate": hashrate,
+        "hashrate_by_worker": hashrate_by_worker,
+        "workers": list(hashrate_by_worker.keys()),
         "blocks": blocks_out,
         "window": _win_pre,
     }
@@ -1160,6 +1198,12 @@ async def user_stats(address: str) -> UserStats:
     pending = credit if finder == address else 0
     recent = await store.list_shares_for_address(address, limit=100)
     workers = sorted({r.worker for r in recent if r.worker})
+    wbreak = await store.worker_breakdown_after_cutoff(
+        _cutoff, addresses=[address], recent_sec=600
+    )
+    worker_breakdown = _worker_breaks_for_addr(
+        address, wbreak, sats_total=int(est or 0)
+    )
     q = await store.get_quarantine(address)
     rej, attempts = await store.recent_attempt_stats(address, limit=20)
     paid_finder, unpaid_finder = await store.finder_credit_totals(address)
@@ -1199,6 +1243,7 @@ async def user_stats(address: str) -> UserStats:
         unpaid_pending_sats=unpaid_pending,
         share_count_shown=len(recent),
         workers=workers,
+        worker_breakdown=worker_breakdown,
         quarantined=bool(q),
         quarantine_reason=(q or {}).get("reason") if q else None,
         reject27_recent=rej,
@@ -1298,6 +1343,36 @@ async def _worker_name_for_address(address: str) -> str:
     return ""
 
 
+def _worker_breaks_for_addr(
+    addr: str,
+    breakdown: dict[str, list[dict]],
+    *,
+    sats_total: int | None = None,
+) -> list[WorkerBreak]:
+    rows = breakdown.get(addr) or []
+    addr_work = sum(int(r.get("work") or 0) for r in rows) or 1
+    out: list[WorkerBreak] = []
+    for r in rows:
+        w = int(r.get("work") or 0)
+        label = _display_worker(addr, str(r.get("worker") or "")) or str(r.get("worker") or "")
+        if not label:
+            label = "(unknown)"
+        sats = None
+        if sats_total is not None and sats_total > 0:
+            sats = int(sats_total) * w // addr_work
+        out.append(
+            WorkerBreak(
+                worker=label,
+                shares=int(r.get("shares") or 0),
+                work=w,
+                share_pct=round(100.0 * w / addr_work, 4),
+                hashrate_hs=float(r.get("hashrate_hs") or 0.0),
+                sats=sats,
+            )
+        )
+    return out
+
+
 async def _coinbaser_payload() -> CoinbaserResponse:
     """Same split Gateways get from Prime — prefer CoinbaserSplitCache.
 
@@ -1363,6 +1438,10 @@ async def _coinbaser_payload() -> CoinbaserResponse:
 
     out_addrs = [str(o.get("address") or "") for o in raw if o.get("address")]
     nmap = await store.nicknames_for_addresses(out_addrs)
+    cutoff = await store.payout_window_cutoff_seq(settings.window_blocks)
+    wbreak = await store.worker_breakdown_after_cutoff(
+        cutoff, addresses=out_addrs, recent_sec=600
+    )
     # Fee 0%: no in-coinbase finder bonus — don't surface tides+finder on the site.
     hide_finder_kind = int(getattr(settings, "fee_bps", 0) or 0) <= 0
     outputs: list[CoinbaseOutput] = []
@@ -1371,21 +1450,33 @@ async def _coinbaser_payload() -> CoinbaserResponse:
         if hide_finder_kind and kind == "tides+finder":
             kind = "tides"
         addr = str(o.get("address") or "")
+        sats = int(o.get("sats") or 0)
+        workers: list[WorkerBreak] = []
         if kind == "ops":
             name = "ops"
             # Ops fee line shares the pool_ops address with miner shares when
             # hashrate also mined there — don't show that miner nickname here.
             nick = "OPERATION FEE"
         else:
-            name = await _worker_name_for_address(addr)
+            workers = _worker_breaks_for_addr(addr, wbreak, sats_total=sats)
+            if workers:
+                if len(workers) == 1:
+                    name = workers[0].worker
+                else:
+                    name = " · ".join(w.worker for w in workers[:4])
+                    if len(workers) > 4:
+                        name += f" +{len(workers) - 4}"
+            else:
+                name = await _worker_name_for_address(addr)
             nick = nmap.get(addr)
         outputs.append(
             CoinbaseOutput(
                 address=addr,
-                sats=int(o.get("sats") or 0),
+                sats=sats,
                 kind=kind,
                 name=name,
                 nickname=nick,
+                workers=workers,
             )
         )
     return CoinbaserResponse(

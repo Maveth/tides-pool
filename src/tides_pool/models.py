@@ -74,6 +74,17 @@ class PoolStats(BaseModel):
 
 
 
+class WorkerBreak(BaseModel):
+    """Per-worker slice of an address's window (or coinbaser line)."""
+
+    worker: str
+    shares: int = 0
+    work: int = 0
+    share_pct: float = 0.0  # of this address's window work
+    hashrate_hs: float = 0.0
+    sats: int | None = None  # proportional coinbaser sats when known
+
+
 class UserStats(BaseModel):
     address: str
     work_in_window: int = 0
@@ -86,6 +97,7 @@ class UserStats(BaseModel):
     unpaid_pending_sats: int = 0
     share_count_shown: int = 0
     workers: list[str] = Field(default_factory=list)
+    worker_breakdown: list[WorkerBreak] = Field(default_factory=list)
     quarantined: bool = False
     quarantine_reason: str | None = None
     reject27_recent: int = 0
@@ -137,6 +149,7 @@ class Contributor(BaseModel):
     # None when no finds by this address in-window (or no work).
     luck_pct: float | None = None
     luck_finds: int = 0
+    workers: list[WorkerBreak] = Field(default_factory=list)
 
 
 class BlockOut(BaseModel):
@@ -162,8 +175,9 @@ class CoinbaseOutput(BaseModel):
     address: str
     sats: int
     kind: str = "tides"
-    name: str = ""  # stratum worker name for this payout address, when known
+    name: str = ""  # stratum worker label(s) for this payout address, when known
     nickname: str | None = None  # last known coinbase secondary tag for address
+    workers: list[WorkerBreak] = Field(default_factory=list)
 
 
 class CoinbaserResponse(BaseModel):

@@ -84,8 +84,20 @@ class Store(ABC):
         end: datetime,
         bucket_sec: int,
         address: str | None = None,
+        worker: str | None = None,
     ) -> list[tuple[datetime, int]]:
         """Return [(bucket_start_utc, sum_work), ...] ascending for chart hashrate."""
+        ...
+
+    @abstractmethod
+    async def worker_breakdown_after_cutoff(
+        self,
+        cutoff_seq: int | None,
+        *,
+        addresses: list[str] | None = None,
+        recent_sec: int = 600,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """address → [{worker, shares, work, hashrate_hs}, ...] newest/heaviest first."""
         ...
 
     @abstractmethod
@@ -355,6 +367,55 @@ class MemoryStore(Store):
                 break
         return out
 
+    async def worker_breakdown_after_cutoff(
+        self,
+        cutoff_seq: int | None,
+        *,
+        addresses: list[str] | None = None,
+        recent_sec: int = 600,
+    ) -> dict[str, list[dict[str, Any]]]:
+        from collections import defaultdict
+
+        want = set(addresses) if addresses else None
+        tallies: dict[str, dict[str, dict[str, int]]] = defaultdict(
+            lambda: defaultdict(lambda: {"shares": 0, "work": 0})
+        )
+        recent_work: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        cutoff_ts = datetime.now(timezone.utc).timestamp() - max(int(recent_sec), 0)
+        for r in self._shares:
+            if r.work < 1:
+                continue
+            if cutoff_seq is not None and r.seq <= cutoff_seq:
+                continue
+            if want is not None and r.address not in want:
+                continue
+            wlabel = (r.worker or "").strip() or "(unknown)"
+            tallies[r.address][wlabel]["shares"] += 1
+            tallies[r.address][wlabel]["work"] += int(r.work)
+            ts = (
+                r.accepted_at.timestamp()
+                if r.accepted_at.tzinfo
+                else r.accepted_at.replace(tzinfo=timezone.utc).timestamp()
+            )
+            if ts >= cutoff_ts:
+                recent_work[r.address][wlabel] += int(r.work)
+        out: dict[str, list[dict[str, Any]]] = {}
+        for addr, by_w in tallies.items():
+            rows = []
+            for wlabel, t in by_w.items():
+                rw = recent_work.get(addr, {}).get(wlabel, 0)
+                rows.append(
+                    {
+                        "worker": wlabel,
+                        "shares": int(t["shares"]),
+                        "work": int(t["work"]),
+                        "hashrate_hs": estimate_hashrate_hs(rw, recent_sec),
+                    }
+                )
+            rows.sort(key=lambda x: (-x["work"], x["worker"]))
+            out[addr] = rows
+        return out
+
     async def share_work_buckets(
         self,
         *,
@@ -362,6 +423,7 @@ class MemoryStore(Store):
         end: datetime,
         bucket_sec: int,
         address: str | None = None,
+        worker: str | None = None,
     ) -> list[tuple[datetime, int]]:
         import time
         from collections import defaultdict
@@ -373,6 +435,10 @@ class MemoryStore(Store):
         for r in self._shares:
             if address and r.address != address:
                 continue
+            if worker is not None:
+                wlabel = (r.worker or "").strip() or "(unknown)"
+                if wlabel != worker:
+                    continue
             ts = r.accepted_at.timestamp() if r.accepted_at.tzinfo else r.accepted_at.replace(tzinfo=timezone.utc).timestamp()
             if ts < start_ts or ts >= end_ts:
                 continue
@@ -1032,6 +1098,102 @@ class PostgresStore(Store):
             for r in rows
         ]
 
+    async def worker_breakdown_after_cutoff(
+        self,
+        cutoff_seq: int | None,
+        *,
+        addresses: list[str] | None = None,
+        recent_sec: int = 600,
+    ) -> dict[str, list[dict[str, Any]]]:
+        addrs = [a for a in (addresses or []) if a]
+        if cutoff_seq is None:
+            if addrs:
+                rows = await self._p().fetch(
+                    """
+                    SELECT address,
+                           COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COUNT(*)::bigint AS shares,
+                           COALESCE(SUM(work), 0)::bigint AS work
+                    FROM shares
+                    WHERE work >= 1 AND address = ANY($1::text[])
+                    GROUP BY 1, 2
+                    """,
+                    addrs,
+                )
+            else:
+                rows = await self._p().fetch(
+                    """
+                    SELECT address,
+                           COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COUNT(*)::bigint AS shares,
+                           COALESCE(SUM(work), 0)::bigint AS work
+                    FROM shares
+                    WHERE work >= 1
+                    GROUP BY 1, 2
+                    """
+                )
+        else:
+            if addrs:
+                rows = await self._p().fetch(
+                    """
+                    SELECT address,
+                           COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COUNT(*)::bigint AS shares,
+                           COALESCE(SUM(work), 0)::bigint AS work
+                    FROM shares
+                    WHERE seq > $1 AND work >= 1 AND address = ANY($2::text[])
+                    GROUP BY 1, 2
+                    """,
+                    int(cutoff_seq),
+                    addrs,
+                )
+            else:
+                rows = await self._p().fetch(
+                    """
+                    SELECT address,
+                           COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COUNT(*)::bigint AS shares,
+                           COALESCE(SUM(work), 0)::bigint AS work
+                    FROM shares
+                    WHERE seq > $1 AND work >= 1
+                    GROUP BY 1, 2
+                    """,
+                    int(cutoff_seq),
+                )
+        recent = await self._p().fetch(
+            """
+            SELECT address,
+                   COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                   COALESCE(SUM(work), 0)::bigint AS work
+            FROM shares
+            WHERE accepted_at >= now() - ($1 * interval '1 second')
+              AND work >= 1
+              AND ($2::text[] IS NULL OR address = ANY($2::text[]))
+            GROUP BY 1, 2
+            """,
+            int(recent_sec),
+            addrs or None,
+        )
+        recent_map: dict[tuple[str, str], int] = {
+            (str(r["address"]), str(r["worker"])): int(r["work"] or 0) for r in recent
+        }
+        out: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            addr = str(r["address"])
+            wlabel = str(r["worker"])
+            rw = recent_map.get((addr, wlabel), 0)
+            out.setdefault(addr, []).append(
+                {
+                    "worker": wlabel,
+                    "shares": int(r["shares"] or 0),
+                    "work": int(r["work"] or 0),
+                    "hashrate_hs": estimate_hashrate_hs(rw, recent_sec),
+                }
+            )
+        for addr in out:
+            out[addr].sort(key=lambda x: (-x["work"], x["worker"]))
+        return out
+
     async def share_work_buckets(
         self,
         *,
@@ -1039,9 +1201,29 @@ class PostgresStore(Store):
         end: datetime,
         bucket_sec: int,
         address: str | None = None,
+        worker: str | None = None,
     ) -> list[tuple[datetime, int]]:
         bsec = max(int(bucket_sec), 1)
-        if address:
+        if address and worker is not None:
+            rows = await self._p().fetch(
+                """
+                SELECT to_timestamp(floor(extract(epoch FROM accepted_at) / $3) * $3)
+                         AT TIME ZONE 'UTC' AS bucket_ts,
+                       COALESCE(SUM(work), 0)::bigint AS work
+                FROM shares
+                WHERE accepted_at >= $1 AND accepted_at < $2
+                  AND address = $4
+                  AND COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') = $5
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                start,
+                end,
+                bsec,
+                address,
+                worker,
+            )
+        elif address:
             rows = await self._p().fetch(
                 """
                 SELECT to_timestamp(floor(extract(epoch FROM accepted_at) / $3) * $3)

@@ -419,11 +419,29 @@ function renderCoinbaser(coinbaser) {
     .map((o) => {
       let rowClass = "";
       if (o.kind === "ops") rowClass = ' class="row-ops"';
-      const worker = (o.name || "").trim();
+      const wlist = Array.isArray(o.workers) ? o.workers : [];
+      let worker = (o.name || "").trim();
+      if (wlist.length > 1) {
+        worker = wlist.map((w) => w.worker).join(" · ");
+      } else if (wlist.length === 1) {
+        worker = wlist[0].worker || worker;
+      }
       const nick = (o.nickname || "").trim();
+      const tip =
+        wlist.length > 1
+          ? wlist
+              .map(
+                (w) =>
+                  `${w.worker}: ${fmtInt(w.shares)} sh · work ${fmtInt(w.work)}` +
+                  (w.sats != null ? ` · ~${fmtBtc(w.sats)}` : "")
+              )
+              .join("\n")
+          : worker
+            ? `Stratum worker: ${worker}`
+            : "";
       return `<tr${rowClass}>
       <td>${kindCell(o, coinbaser.reward_sats_estimate)}</td>
-      ${clipCell(worker, { title: worker ? `Stratum worker: ${worker}` : "" })}
+      ${clipCell(worker, { title: tip })}
       ${clipCell(nick, { title: nick ? `Nickname: ${nick}` : "", wide: true })}
       <td class="mono"><a href="/address?a=${encodeURIComponent(o.address)}" title="${o.address}">${shortAddr(o.address)}</a></td>
       <td title="${fmtBtcTitle(o.sats)}">${fmtBtc(o.sats)}</td>
@@ -474,12 +492,18 @@ function renderContributors(contrib) {
   const rows = contribShowAll || restN <= 0 ? contribLast : live;
   // Keep original rank numbers from full list
   const rank = new Map(contribLast.map((c, i) => [c.address, i + 1]));
-  cbody.innerHTML = rows
-    .map((c) => {
-      const i = rank.get(c.address) || 0;
-      return `<tr>
+  const parts = [];
+  for (const c of rows) {
+    const i = rank.get(c.address) || 0;
+    const wlist = Array.isArray(c.workers) ? c.workers : [];
+    const multi = wlist.length > 1;
+    const expandId = `cw-${c.address.slice(-10)}`;
+    const plus = multi
+      ? `<button type="button" class="worker-plus" data-expand="${expandId}" title="${wlist.length} workers — click to expand">+</button>`
+      : "";
+    parts.push(`<tr>
         <td class="activity-cell">${activityDot(c)}</td>
-        <td>${i}</td>
+        <td>${i}${plus ? " " + plus : ""}</td>
         <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
         ${clipCell(c.nickname, { title: c.nickname ? `Nickname: ${c.nickname}` : "", wide: true })}
         <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
@@ -488,9 +512,44 @@ function renderContributors(contrib) {
         <td title="Total work in payout window only (7 confirmed + current) — not lifetime">${fmtInt(c.work)}</td>
         <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
         <td title="Your total window work ÷ window work">${Number(c.share_pct || 0).toFixed(2)}%</td>
-      </tr>`;
-    })
-    .join("");
+      </tr>`);
+    if (multi) {
+      const sub = wlist
+        .map((w) => {
+          const payoutCell =
+            w.sats != null
+              ? `<span title="${fmtBtcTitle(w.sats)}">${fmtBtc(w.sats)}</span>`
+              : `<span title="≈ ${Number(w.share_pct || 0).toFixed(1)}% of this address">${Number(w.share_pct || 0).toFixed(1)}%</span>`;
+          return `<tr class="worker-sub" data-parent="${expandId}" hidden>
+            <td></td>
+            <td></td>
+            <td class="muted" colspan="2">↳ <span class="mono">${escapeHtml(w.worker)}</span></td>
+            <td>${fmtInt(w.shares)}</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td>${fmtInt(w.work)}</td>
+            <td>${fmtHashrate(w.hashrate_hs)}</td>
+            <td>${payoutCell}</td>
+          </tr>`;
+        })
+        .join("");
+      parts.push(sub);
+    }
+  }
+  cbody.innerHTML = parts.join("");
+  cbody.querySelectorAll(".worker-plus").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = btn.getAttribute("data-expand");
+      const open = btn.dataset.open === "1";
+      btn.dataset.open = open ? "0" : "1";
+      btn.textContent = open ? "+" : "−";
+      cbody.querySelectorAll(`tr.worker-sub[data-parent="${id}"]`).forEach((tr) => {
+        tr.hidden = open;
+      });
+    });
+  });
   if (more) {
     if (restN <= 0) {
       more.hidden = true;
@@ -937,62 +996,137 @@ async function loadPoolChart(range) {
   });
 }
 
-async function loadUserChart(address, range) {
-  if (!chartReady() || !address) return;
+const WORKER_CHART_COLORS = [
+  "#3dd6c6",
+  "#6ea8ff",
+  "#f0b429",
+  "#e879f9",
+  "#34d399",
+  "#fb7185",
+  "#a78bfa",
+  "#fbbf24",
+];
+let userChartData = null;
+let userWorkerVisible = {}; // worker -> bool; empty = all on
+
+function renderUserWorkerFilters(workers) {
+  const el = document.getElementById("userWorkerFilters");
+  if (!el) return;
+  if (!workers || workers.length < 2) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML =
+    `<label><input type="checkbox" data-worker="__all__" ${
+      Object.keys(userWorkerVisible).length === 0 ||
+      workers.every((w) => userWorkerVisible[w] !== false)
+        ? "checked"
+        : ""
+    }/> All</label>` +
+    workers
+      .map((w, i) => {
+        const on = userWorkerVisible[w] !== false;
+        const color = WORKER_CHART_COLORS[i % WORKER_CHART_COLORS.length];
+        return `<label><input type="checkbox" data-worker="${escapeHtml(w)}" ${
+          on ? "checked" : ""
+        }/> <span style="color:${color}">${escapeHtml(w)}</span></label>`;
+      })
+      .join("");
+  el.querySelectorAll('input[type="checkbox"]').forEach((inp) => {
+    inp.addEventListener("change", () => {
+      const key = inp.getAttribute("data-worker");
+      if (key === "__all__") {
+        const on = inp.checked;
+        workers.forEach((w) => {
+          userWorkerVisible[w] = on;
+        });
+        el.querySelectorAll('input[data-worker]:not([data-worker="__all__"])').forEach(
+          (x) => {
+            x.checked = on;
+          }
+        );
+      } else {
+        userWorkerVisible[key] = inp.checked;
+        const allBox = el.querySelector('input[data-worker="__all__"]');
+        if (allBox) {
+          allBox.checked = workers.every((w) => userWorkerVisible[w] !== false);
+        }
+      }
+      if (userChartData) paintUserChart(userChartData);
+    });
+  });
+}
+
+function paintUserChart(data) {
   const canvas = document.getElementById("userChart");
-  if (!canvas) return;
-  const data = await jget(
-    "/api/user/" +
-      encodeURIComponent(address) +
-      "/charts?range=" +
-      encodeURIComponent(range || "24h")
-  );
-  const yMax = hsAxisMax([data.hashrate]);
+  if (!canvas || !chartReady()) return;
+  const byW = data.hashrate_by_worker || {};
+  const workers = data.workers || Object.keys(byW);
+  const seriesList = [];
+  if (workers.length >= 2) {
+    workers.forEach((w, i) => {
+      if (userWorkerVisible[w] === false) return;
+      const series = byW[w] || [];
+      seriesList.push(series);
+    });
+  } else {
+    seriesList.push(data.hashrate || []);
+  }
+  const yMax = hsAxisMax(seriesList);
   const finds = blockScatter(data.blocks, yMax);
   const xBound = chartXBounds({
     pool: data.hashrate,
     network: [],
     blocks: data.blocks,
   });
-  const userSub = document.querySelector("#userChartBox .chart-sub") ||
-    document.querySelector("#minerPanel .chart-sub");
-  if (userSub) {
-    const spanSec = Number(data.range_sec || 0);
-    const base = "From your accepted shares · axis in TH/s · markers = your finds";
-    userSub.textContent =
-      data.range === "window" && spanSec > 0
-        ? `${base} · x-axis = payout window (~${fmtChartSpan(spanSec)})`
-        : base;
+  const datasets = [];
+  if (workers.length >= 2) {
+    workers.forEach((w, i) => {
+      if (userWorkerVisible[w] === false) return;
+      const color = WORKER_CHART_COLORS[i % WORKER_CHART_COLORS.length];
+      datasets.push({
+        type: "line",
+        label: w,
+        yAxisID: "yPool",
+        data: (byW[w] || []).map((p) => ({ x: p.t * 1000, y: p.hs })),
+        borderColor: color,
+        backgroundColor: "transparent",
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.25,
+        fill: false,
+      });
+    });
+  } else {
+    datasets.push({
+      type: "line",
+      label: "Your HR",
+      yAxisID: "yPool",
+      data: (data.hashrate || []).map((p) => ({ x: p.t * 1000, y: p.hs })),
+      borderColor: "#3dd6c6",
+      backgroundColor: "rgba(61,214,198,0.14)",
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.25,
+      fill: true,
+    });
   }
+  datasets.push({
+    type: "scatter",
+    label: "Your finds",
+    yAxisID: "yPool",
+    data: finds,
+    backgroundColor: "#f0b429",
+    borderColor: "#f0b429",
+    pointRadius: 5,
+    pointHoverRadius: 7,
+  });
   userChartObj = destroyChart(userChartObj);
   userChartObj = new Chart(canvas.getContext("2d"), {
     plugins: [findStemPlugin],
-    data: {
-      datasets: [
-        {
-          type: "line",
-          label: "Your HR",
-          yAxisID: "yPool",
-          data: (data.hashrate || []).map((p) => ({ x: p.t * 1000, y: p.hs })),
-          borderColor: "#3dd6c6",
-          backgroundColor: "rgba(61,214,198,0.14)",
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.25,
-          fill: true,
-        },
-        {
-          type: "scatter",
-          label: "Your finds",
-          yAxisID: "yPool",
-          data: finds,
-          backgroundColor: "#f0b429",
-          borderColor: "#f0b429",
-          pointRadius: 5,
-          pointHoverRadius: 7,
-        },
-      ],
-    },
+    data: { datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -1071,6 +1205,35 @@ async function loadUserChart(address, range) {
       },
     },
   });
+}
+
+async function loadUserChart(address, range) {
+  if (!chartReady() || !address) return;
+  const canvas = document.getElementById("userChart");
+  if (!canvas) return;
+  const data = await jget(
+    "/api/user/" +
+      encodeURIComponent(address) +
+      "/charts?range=" +
+      encodeURIComponent(range || "24h")
+  );
+  userChartData = data;
+  const workers = data.workers || [];
+  renderUserWorkerFilters(workers);
+  const userSub = document.querySelector("#userChartBox .chart-sub") ||
+    document.querySelector("#minerPanel .chart-sub");
+  if (userSub) {
+    const spanSec = Number(data.range_sec || 0);
+    const base =
+      workers.length > 1
+        ? `Per-worker lines · toggle above · markers = your finds`
+        : "From your accepted shares · axis in TH/s · markers = your finds";
+    userSub.textContent =
+      data.range === "window" && spanSec > 0
+        ? `${base} · x-axis = payout window (~${fmtChartSpan(spanSec)})`
+        : base;
+  }
+  paintUserChart(data);
 }
 
 async function loadPool() {
@@ -1362,6 +1525,8 @@ async function loadUser(address) {
   document.getElementById("blocksView").classList.add("hidden");
   document.getElementById("userView").classList.remove("hidden");
   document.getElementById("addrInput").value = address;
+  userWorkerVisible = {};
+  userChartData = null;
   wireSharesPager();
   const [user, payouts, stats, info] = await Promise.all([
     jget("/api/user/" + encodeURIComponent(address)),
@@ -1413,9 +1578,42 @@ async function loadUser(address) {
       "Est. next block payout",
       `<span title="${fmtBtcTitle(user.estimated_next_sats || 0)} — your tides window share (finder bonuses are paid manually by ops, not in coinbase)">${fmtBtc(user.estimated_next_sats || 0)}</span>`
     ),
-    card("Workers", user.workers.length ? user.workers.join(", ") : "—", true),
+    card(
+      "Workers",
+      (user.worker_breakdown || []).length
+        ? user.worker_breakdown.map((w) => w.worker).join(", ")
+        : user.workers.length
+          ? user.workers.join(", ")
+          : "—",
+      true
+    ),
     card("Window size", fmtInt(stats.window_work_target) + " @ diff " + fmtInt(stats.block_difficulty)),
   ].join("");
+
+  const wWrap = document.getElementById("userWorkerTableWrap");
+  const wBody = document.getElementById("userWorkerBody");
+  const wbreak = user.worker_breakdown || [];
+  if (wWrap && wBody) {
+    if (wbreak.length > 1) {
+      wWrap.hidden = false;
+      wBody.innerHTML = wbreak
+        .map(
+          (w) => `<tr>
+          <td class="mono">${escapeHtml(w.worker)}</td>
+          <td>${fmtInt(w.shares)}</td>
+          <td>${fmtInt(w.work)}</td>
+          <td>${fmtHashrate(w.hashrate_hs)}</td>
+          <td title="${w.sats != null ? fmtBtcTitle(w.sats) : ""}">${
+            w.sats != null ? fmtBtc(w.sats) : Number(w.share_pct || 0).toFixed(1) + "%"
+          }</td>
+        </tr>`
+        )
+        .join("");
+    } else {
+      wWrap.hidden = true;
+      wBody.innerHTML = "";
+    }
+  }
 
   renderPayoutHistory(payouts || []);
   await loadSharesPage(address, 0);
