@@ -2002,10 +2002,10 @@ async function loadPool() {
       "Network",
       cardSplitValue(
         fmtHashrate(netHs),
-        "hash",
+        "Estimated",
         fmtSharePct(sharePct),
         "our share",
-        "Network hashrate (node) · pool share = pool HR / network HR"
+        "Estimated network hashrate from Knots getnetworkhashps (~last 120 blocks) · pool share = pool HR / network HR"
       )
     ),
     card(
