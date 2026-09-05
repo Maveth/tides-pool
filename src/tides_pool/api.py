@@ -160,7 +160,28 @@ def _probe_prime_tcp(host: str, port: int, *, timeout: float = 1.5) -> bool:
         return False
 
 
-app = FastAPI(title="tides-pool", version=__version__, lifespan=lifespan)
+# Lab/admin HTTP is off by default on live. Set TIDES_ALLOW_LAB_HTTP=1 only on lab.
+_ALLOW_LAB_HTTP = os.environ.get("TIDES_ALLOW_LAB_HTTP", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def _require_lab_http() -> None:
+    """Gate destructive/dev-only write endpoints. Default deny on production."""
+    if not _ALLOW_LAB_HTTP:
+        raise HTTPException(403, "lab/admin HTTP disabled")
+
+
+app = FastAPI(
+    title="tides-pool",
+    version=__version__,
+    lifespan=lifespan,
+    docs_url="/docs" if _ALLOW_LAB_HTTP else None,
+    redoc_url="/redoc" if _ALLOW_LAB_HTTP else None,
+    openapi_url="/openapi.json" if _ALLOW_LAB_HTTP else None,
+)
 
 if STATIC_DIR.is_dir() and settings.normalized_role() != "prime":
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1496,6 +1517,7 @@ async def coinbaser() -> CoinbaserResponse:
 @app.post("/api/admin/clear-lab")
 async def clear_lab(confirm: str = Query("")) -> dict:
     """Wipe share log / fake pool blocks. Keeps RC3 chain meta. confirm=YES"""
+    _require_lab_http()
     if confirm != "YES":
         raise HTTPException(400, "pass confirm=YES")
     result = await store.clear_lab_data()
@@ -1508,6 +1530,7 @@ async def clear_lab(confirm: str = Query("")) -> dict:
 
 @app.post("/api/admin/resync-chain")
 async def resync_chain() -> dict:
+    _require_lab_http()
     global _rpc_ok
     data = await sync_once(store, settings)
     _rpc_ok = True
@@ -1522,6 +1545,7 @@ async def lab_inject_share(
     worker: str | None = None,
 ) -> dict:
     """Dev-only share inject (not DATUM). Prefer real Gateway once Prime is live."""
+    _require_lab_http()
     if work < 1:
         raise HTTPException(400, "work must be >= 1")
     if not address.strip():
@@ -1543,6 +1567,7 @@ async def lab_simulate_block(
     difficulty: int = 1,
     reward_sats: int | None = None,
 ) -> dict:
+    _require_lab_http()
     reward = reward_sats if reward_sats is not None else await _reward_estimate()
     diff = max(difficulty, 1)
     block_hash = f"lab-{height}-{finder[:8]}"
@@ -1597,7 +1622,8 @@ async def info(request: Request) -> dict:
         "role": role,
         "network": settings.network,
         "mempool_explorer_url": settings.mempool_explorer_url,
-        "docs": str(request.base_url) + "docs",
+        "docs": (str(request.base_url) + "docs") if _ALLOW_LAB_HTTP else None,
+        "lab_http_enabled": _ALLOW_LAB_HTTP,
         "ui": str(request.base_url),
         "datum_prime_port": settings.datum_prime_port,
         "pool_host_hint": "tides.maveth.ca",
