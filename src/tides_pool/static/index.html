@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905grp" />
+  <link rel="stylesheet" href="/static/style.css?v=20260905pie" />
 </head>
 <body>
   <header class="top">
@@ -126,15 +126,23 @@
         <h2>If we find a block now</h2>
         <p class="muted">Same payout split Prime sends Gateways (cached window, live template value). Fee / finder / window details are in the footnote below.</p>
         <p class="muted" id="coinbaserNote"></p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th title="⛏️ mining / window work share · ⚙️ ops fee (if any)">Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
-            </thead>
-            <tbody id="coinbaserBody"><tr><td colspan="5">Loading…</td></tr></tbody>
-          </table>
+        <div class="coinbaser-pie-wrap">
+          <canvas id="coinbaserPie" aria-label="Next-block payout split pie chart"></canvas>
         </div>
-        <p class="table-more muted" id="coinbaserMore" hidden></p>
+        <p class="table-more muted" id="coinbaserTableToggleWrap">
+          <button type="button" id="coinbaserTableToggle">Show payout lines</button>
+        </p>
+        <div id="coinbaserTablePanel" hidden>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th title="⛏️ mining / window work share · ⚙️ ops fee (if any)">Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
+              </thead>
+              <tbody id="coinbaserBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <p class="table-more muted" id="coinbaserMore" hidden></p>
+        </div>
       </div>
 
       <div class="stack-panels">
@@ -323,6 +331,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905grp" defer></script>
+  <script src="/static/app.js?v=20260905pie" defer></script>
 </body>
 </html>

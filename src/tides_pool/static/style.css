@@ -274,6 +274,18 @@ tr.nick-group td {
 tr.nick-sub td {
   background: rgba(255,255,255,0.02);
 }
+.coinbaser-pie-wrap {
+  max-width: 420px;
+  margin: 0.75rem auto 0.5rem;
+  position: relative;
+  min-height: 260px;
+}
+@media (min-width: 900px) {
+  .coinbaser-pie-wrap {
+    max-width: 480px;
+    min-height: 300px;
+  }
+}
 .worker-chart-filters {
   display: flex;
   flex-wrap: wrap;

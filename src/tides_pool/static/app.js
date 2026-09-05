@@ -371,8 +371,155 @@ const KIND_ICO = {
 };
 
 const COINBASER_TOP_N = 12;
+const COINBASER_PIE_TOP = 10;
+const COINBASER_TABLE_KEY = "tides_coinbaser_table_open";
 let coinbaserExpanded = false;
 let coinbaserLast = null;
+let coinbaserPieObj = null;
+let coinbaserTableOpen = (() => {
+  try {
+    return sessionStorage.getItem(COINBASER_TABLE_KEY) === "1";
+  } catch {
+    return false;
+  }
+})();
+function saveCoinbaserTableOpen(on) {
+  try {
+    sessionStorage.setItem(COINBASER_TABLE_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+const COINBASER_PIE_COLORS = [
+  "#3dd6c6",
+  "#5b8def",
+  "#f0a202",
+  "#e4572e",
+  "#a06cd5",
+  "#7bdff2",
+  "#f4d35e",
+  "#90be6d",
+  "#f9844a",
+  "#577590",
+  "#43aa8b",
+  "#f94144",
+];
+
+function coinbaserSliceLabel(o) {
+  const nick = (o.nickname || "").trim();
+  if (nick) return nick;
+  const wlist = Array.isArray(o.workers) ? o.workers : [];
+  if (wlist.length === 1 && wlist[0].worker) return String(wlist[0].worker);
+  if ((o.name || "").trim()) return String(o.name).trim();
+  return shortAddr(o.address || "");
+}
+
+function buildCoinbaserPieSlices(outs) {
+  const miners = [];
+  let ops = null;
+  for (const o of outs || []) {
+    if ((o.kind || "") === "ops") ops = o;
+    else miners.push(o);
+  }
+  miners.sort((a, b) => Number(b.sats || 0) - Number(a.sats || 0));
+  const top = miners.slice(0, COINBASER_PIE_TOP);
+  const rest = miners.slice(COINBASER_PIE_TOP);
+  const slices = top.map((o, i) => ({
+    label: coinbaserSliceLabel(o),
+    sats: Number(o.sats || 0),
+    address: o.address || "",
+    kind: o.kind || "tides",
+    color: COINBASER_PIE_COLORS[i % COINBASER_PIE_COLORS.length],
+  }));
+  if (rest.length) {
+    slices.push({
+      label: `Other (${rest.length})`,
+      sats: rest.reduce((s, o) => s + Number(o.sats || 0), 0),
+      address: "",
+      kind: "other",
+      color: "#6b7280",
+    });
+  }
+  if (ops && Number(ops.sats || 0) > 0) {
+    slices.push({
+      label: "Ops",
+      sats: Number(ops.sats || 0),
+      address: ops.address || "",
+      kind: "ops",
+      color: "#9ca3af",
+    });
+  }
+  return slices.filter((s) => s.sats > 0);
+}
+
+function paintCoinbaserPie(outs, rewardEst) {
+  const canvas = document.getElementById("coinbaserPie");
+  if (!canvas) return;
+  if (!chartReady()) return;
+  const slices = buildCoinbaserPieSlices(outs);
+  const wrap = canvas.parentElement;
+  if (!slices.length) {
+    if (coinbaserPieObj) coinbaserPieObj = destroyChart(coinbaserPieObj);
+    if (wrap) wrap.hidden = true;
+    return;
+  }
+  if (wrap) wrap.hidden = false;
+  const total = slices.reduce((s, x) => s + x.sats, 0) || Number(rewardEst || 0) || 1;
+  const labels = slices.map((s) => {
+    const pct = (100 * s.sats) / total;
+    return `${s.label} (${pct >= 1 ? pct.toFixed(1) : pct.toFixed(2)}%)`;
+  });
+  coinbaserPieObj = destroyChart(coinbaserPieObj);
+  coinbaserPieObj = new Chart(canvas.getContext("2d"), {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [
+        {
+          data: slices.map((s) => s.sats),
+          backgroundColor: slices.map((s) => s.color),
+          borderColor: "rgba(0,0,0,0.35)",
+          borderWidth: 1,
+          hoverOffset: 6,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      cutout: "52%",
+      plugins: {
+        legend: {
+          position: "right",
+          labels: {
+            boxWidth: 12,
+            boxHeight: 12,
+            font: { size: 11 },
+            color: "#c8c8c8",
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label(ctx) {
+              const s = slices[ctx.dataIndex];
+              if (!s) return "";
+              const pct = (100 * s.sats) / total;
+              return ` ${s.label}: ${fmtBtc(s.sats)} (${pct.toFixed(2)}%)`;
+            },
+          },
+        },
+      },
+      onClick(_ev, els) {
+        if (!els || !els.length) return;
+        const s = slices[els[0].index];
+        if (s && s.address) {
+          window.location.href = `/address?a=${encodeURIComponent(s.address)}`;
+        }
+      },
+    },
+  });
+}
 const CONTRIB_OPEN_KEY = "tides_contrib_worker_open";
 const CONTRIB_SORT_KEY = "tides_contrib_sort";
 const CONTRIB_GROUP_KEY = "tides_contrib_group";
@@ -598,6 +745,8 @@ function renderCoinbaser(coinbaser) {
   const cbBody = document.getElementById("coinbaserBody");
   const cbNote = document.getElementById("coinbaserNote");
   const more = document.getElementById("coinbaserMore");
+  const tablePanel = document.getElementById("coinbaserTablePanel");
+  const tableToggle = document.getElementById("coinbaserTableToggle");
   if (!cbBody) return;
   if (!coinbaser) {
     cbBody.innerHTML = `<tr><td colspan="5" class="muted">Failed to load /api/coinbaser</td></tr>`;
@@ -606,6 +755,7 @@ function renderCoinbaser(coinbaser) {
       more.hidden = true;
       more.innerHTML = "";
     }
+    paintCoinbaserPie([], 0);
     return;
   }
   coinbaserLast = coinbaser;
@@ -616,6 +766,23 @@ function renderCoinbaser(coinbaser) {
       : `No miner lines yet (~${fmtBtc(coinbaser.reward_sats_estimate)}) — empty window`;
     cbNote.textContent = note;
   }
+  paintCoinbaserPie(outs, coinbaser.reward_sats_estimate);
+
+  if (tablePanel) tablePanel.hidden = !coinbaserTableOpen;
+  if (tableToggle) {
+    tableToggle.textContent = coinbaserTableOpen
+      ? "Hide payout lines"
+      : `Show payout lines${outs.length ? ` (${outs.length})` : ""}`;
+    if (!tableToggle.dataset.wired) {
+      tableToggle.dataset.wired = "1";
+      tableToggle.addEventListener("click", () => {
+        coinbaserTableOpen = !coinbaserTableOpen;
+        saveCoinbaserTableOpen(coinbaserTableOpen);
+        if (coinbaserLast) renderCoinbaser(coinbaserLast);
+      });
+    }
+  }
+
   if (!outs.length) {
     cbBody.innerHTML = `<tr><td colspan="5" class="muted">No coinbaser outputs (empty window)</td></tr>`;
     if (more) {
@@ -669,13 +836,7 @@ function renderCoinbaser(coinbaser) {
         ? `<button type="button" id="coinbaserToggle">Show top ${COINBASER_TOP_N} only</button>`
         : `<button type="button" id="coinbaserToggle">Show ${hidden} more line${hidden === 1 ? "" : "s"}</button>`;
       const btn = document.getElementById("coinbaserToggle");
-      if (btn && !btn.dataset.wired) {
-        btn.dataset.wired = "1";
-        btn.addEventListener("click", () => {
-          coinbaserExpanded = !coinbaserExpanded;
-          if (coinbaserLast) renderCoinbaser(coinbaserLast);
-        });
-      } else if (btn) {
+      if (btn) {
         btn.onclick = () => {
           coinbaserExpanded = !coinbaserExpanded;
           if (coinbaserLast) renderCoinbaser(coinbaserLast);
