@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from tides_pool import __version__
+from tides_pool.addresses import is_valid_payout_address
 from tides_pool.bitcoin_rpc import BitcoinRPC, BitcoinRPCError
 from tides_pool.chain_sync import chain_sync_loop, sync_once
 from tides_pool.config import Settings, finder_credit_bps, miner_reward_bps
@@ -718,8 +719,11 @@ async def stats() -> PoolStats:
 @app.get("/api/contributors", response_model=list[Contributor])
 async def contributors(limit: int = Query(50, ge=1, le=500)) -> list[Contributor]:
     _shares, window, cutoff, _n = await _payout_window()
+    # Hide junk / lab-injected non-addresses (defense in depth; Prime already rejects).
+    window = [s for s in window if is_valid_payout_address(getattr(s, "address", "") or "")]
     hr_window = 600
     recent = await store.list_share_rows_since(hr_window, limit=50_000)
+    recent = [r for r in recent if is_valid_payout_address(getattr(r, "address", "") or "")]
     # "This block" = shares after the latest confirmed find's share_head_seq.
     n_win = max(int(settings.window_blocks or 8), 1)
     confirmed = await store.list_confirmed_blocks(limit=n_win)
@@ -1576,9 +1580,12 @@ async def lab_inject_share(
     _require_lab_http()
     if work < 1:
         raise HTTPException(400, "work must be >= 1")
-    if not address.strip():
+    addr = address.strip()
+    if not addr:
         raise HTTPException(400, "address required")
-    row = await store.append_share(address.strip(), work, worker=worker, fee_bps=0)
+    if not is_valid_payout_address(addr):
+        raise HTTPException(400, "invalid payout address")
+    row = await store.append_share(addr, work, worker=worker, fee_bps=0)
     return {
         "seq": row.seq,
         "address": row.address,

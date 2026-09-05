@@ -1418,6 +1418,18 @@ class DatumPrimeSession:
                 self.coinbaser_cache.note_reject_ua(self.client_ua, kind="bad_payout")
             except Exception:  # noqa: BLE001
                 pass
+            # Audit trail (full bech32/base58 check is cheap; do not skip for new miners).
+            try:
+                await self.store.record_share_attempt(
+                    address or username,
+                    accepted=False,
+                    reason_code=DATUM_REJECT_BAD_USERNAME,
+                    why="bad payout address",
+                    worker=worker,
+                    is_block=is_block,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return
 
         # When we assigned a multi-out split, refuse empty/type-0/subsidy-only

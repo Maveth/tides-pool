@@ -141,8 +141,28 @@ def address_to_script(addr: str) -> bytes:
     raise ValueError(f"unsupported address version 0x{version:02x}")
 
 
+def looks_like_payout_address(addr: str) -> bool:
+    """Cheap structural gate (prefix + length). Not a checksum — use is_valid_payout_address."""
+    a = (addr or "").strip()
+    if not a or len(a) < 26 or len(a) > 90:
+        return False
+    low = a.lower()
+    if low.startswith(("bc1", "tb1", "bcrt1")):
+        return True
+    # Legacy P2PKH / P2SH
+    return a[0] in "13mn2" and all(
+        ch in "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" for ch in a
+    )
+
+
 def is_valid_payout_address(addr: str) -> bool:
-    """True iff addr encodes to a supported scriptPubKey (legacy / bech32 / bech32m)."""
+    """True iff addr encodes to a supported scriptPubKey (legacy / bech32 / bech32m).
+
+    Full checksum decode is cheap (microseconds) — safe to run on every share.
+    A bc1* prefix alone is NOT enough (bc1qtest passes a naive startswith).
+    """
+    if not looks_like_payout_address(addr):
+        return False
     try:
         address_to_script(addr)
         return True
