@@ -818,8 +818,10 @@ class DatumPrimeSession:
         return any(int(v.get("n_value_outs") or 0) >= 2 for v in self.recent_coinbasers.values())
 
     def _coinbase_id_ok(self, coinbase_id: int, *, subsidy_only: bool) -> tuple[bool, str]:
-        """When multi-out was assigned, share must use a known non-empty coinbase id.
+        """When multi-out was assigned, refuse empty/type-0/subsidy-only only.
 
+        Requiring ``coinbase_id in recent_coinbasers`` false-quarantined real
+        Gateways (lag / id wrap) — left for a later tighter design.
         Returns (ok, why). why is empty when ok.
         """
         if not self._assigned_multi_out():
@@ -827,10 +829,6 @@ class DatumPrimeSession:
         cid = int(coinbase_id) & 0xFF
         if subsidy_only or cid == 0 or cid == 0xFF:
             return False, "coinbase not multi-out"
-        if cid not in self.recent_coinbasers:
-            return False, "unknown coinbase_id"
-        # Prefer ids that were actually multi-out (≥2); allow any remembered id
-        # so a lagged single-out assignment in the ring does not false-reject.
         return True, ""
 
     async def _get_quarantine_cached(self, address: str) -> dict | None:

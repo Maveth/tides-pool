@@ -20,15 +20,16 @@ def test_no_multi_out_allows_any_id():
     assert ok and why == ""
 
 
-def test_multi_out_rejects_zero_and_unknown():
+def test_multi_out_rejects_zero_only():
     s = _FakeSession()
     s._remember_coinbaser(3, 5)
     ok, why = s._coinbase_id_ok(0, subsidy_only=False)
     assert not ok and "multi-out" in why
     ok, why = s._coinbase_id_ok(0xFF, subsidy_only=True)
     assert not ok
+    # Unknown non-zero id allowed again (ring check false-quarantined real GWs).
     ok, why = s._coinbase_id_ok(9, subsidy_only=False)
-    assert not ok and "unknown" in why
+    assert ok and why == ""
     ok, why = s._coinbase_id_ok(3, subsidy_only=False)
     assert ok and why == ""
 
