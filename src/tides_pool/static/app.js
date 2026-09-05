@@ -528,7 +528,8 @@ function ensureCoinbaserOutlabelsPlugin() {
         const onRight = cos >= 0;
         const ax = arc.x + cos * arc.outerRadius;
         const ay = arc.y + sin * arc.outerRadius;
-        const elbowR = arc.outerRadius + 16;
+        // Short radial stub — keep leaders tight so side columns keep name room.
+        const elbowR = arc.outerRadius + 10;
         const ex = arc.x + cos * elbowR;
         const ey = arc.y + sin * elbowR;
         const pctTxt = pct >= 1 ? pct.toFixed(1) : pct.toFixed(2);
@@ -579,12 +580,12 @@ function ensureCoinbaserOutlabelsPlugin() {
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
       // Labels in layout padding. Rim → short radial stub → one angled leg to text.
-      const labelGap = 8;
+      const labelGap = 6;
       // Inset from canvas edges so trailing "%" isn't clipped on some displays.
-      const outerPad = 18;
+      const outerPad = 22;
       const drawSide = (arr, onRight) => {
         const colW = onRight ? chart.width - chartArea.right : chartArea.left;
-        const maxTw = Math.max(40, colW - outerPad - labelGap - 4);
+        const maxTw = Math.max(48, colW - outerPad - labelGap - 2);
         for (const it of arr) {
           let text = it.text;
           let tw = ctx.measureText(text).width;
@@ -600,11 +601,11 @@ function ensureCoinbaserOutlabelsPlugin() {
           let lineEndX;
           if (onRight) {
             tx = chart.width - outerPad;
-            lineEndX = Math.max(chartArea.right + 8, tx - tw - labelGap);
+            lineEndX = Math.max(chartArea.right + 4, tx - tw - labelGap);
             ctx.textAlign = "right";
           } else {
             tx = outerPad;
-            lineEndX = Math.min(chartArea.left - 8, tx + tw + labelGap);
+            lineEndX = Math.min(chartArea.left - 4, tx + tw + labelGap);
             ctx.textAlign = "left";
           }
           ctx.strokeStyle = it.color || "rgba(180,180,180,0.75)";
@@ -669,10 +670,10 @@ function paintCoinbaserPie(outs, rewardEst) {
       cutout: "48%",
       animation: false,
       layout: {
-        // Side columns for labels + extra top/bottom so edge labels aren't clipped.
+        // Wider side columns (~15%+) → shorter leaders + more room for names/%.
         padding: (() => {
           const narrow = typeof window !== "undefined" && window.innerWidth < 700;
-          const side = narrow ? 86 : 140;
+          const side = narrow ? 100 : 165;
           return { top: 28, bottom: 28, left: side, right: side };
         })(),
       },
