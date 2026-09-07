@@ -60,6 +60,7 @@ services:
       LAB_SNAP_DIR: /app/snapshots
       LAB_LIVE_WEB: http://deploy-tides-web-1:8080
       LAB_SNAP_INTERVAL_SEC: "300"
+      LAB_FIND_POLL_SEC: "15"
       LAB_USER_CONCURRENCY: "8"
       LAB_USER_ADDR_LIMIT: "500"
       LAB_USER_SHARE_LIMIT: "200"

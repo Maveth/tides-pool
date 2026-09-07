@@ -1,12 +1,15 @@
-"""Public/lab RIPTIDE UI: mostly snapshot-backed APIs + a few live overlays.
+"""Public RIPTIDE UI: live cards/blocks + snapshotted heavy tables.
 
-Snapshots (≈5 min): coinbaser, contrib work, charts, miner pages, stats base.
-Live (short timeout, snap fallback):
-  - /api/blocks — new finds must show immediately
-  - /api/stats — last_pool_block_* / find counters overlaid from live
+Live (tides-web, snap fallback):
+  - /api/stats — top cards (hashrate, finds, network, …)
+  - /api/blocks — recent finds table
+  - /api/coinbaser — suggested split
+Snapshots (≈5 min, or immediately on new pool find):
+  - contributors (work / this-block / % Blocks w Shares), charts, miner pages
 Live overlays (DB meta, short TTL):
-  - contributors: cb_type_status / cb_type_tip (gateway coinbase class ✓/⚠/?)
-  - blocks: manual_adjustment (LISTED_ONLY payout table)
+  - contributors: cb_type_* (gateway class)
+  - blocks: manual_adjustment (LISTED_ONLY table)
+POST /api/snap/refresh — ask snapshot-refresher to rebuild now.
 """
 from __future__ import annotations
 
@@ -92,16 +95,6 @@ def _fetch_live_json(path: str, *, timeout: float | None = None) -> Any | None:
             return json.loads(r.read().decode())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
         return None
-
-
-_STATS_FIND_KEYS = (
-    "last_pool_block_height",
-    "last_pool_block_at",
-    "last_pool_block_age_sec",
-    "blocks_last_24h",
-    "blocks_last_7d",
-    "chain_height",
-)
 
 
 def _db_fetch_meta(key: str) -> Any | None:
@@ -250,7 +243,8 @@ def health() -> Any:
             "cb_type": bool(DATABASE_URL),
             "manual_adjustment": bool(DATABASE_URL),
             "blocks_live": bool(LIVE_WEB),
-            "stats_find_live": bool(LIVE_WEB),
+            "stats_live": bool(LIVE_WEB),
+            "coinbaser_live": bool(LIVE_WEB),
             "cb_type_ttl_sec": _CB_TYPE_TTL,
             "live_web": LIVE_WEB or None,
         }
@@ -262,32 +256,26 @@ def api_meta() -> Any:
     return _load("meta.json")
 
 
+@app.post("/api/snap/refresh")
+def api_snap_refresh() -> Any:
+    """Ask snapshot-refresher to rebuild now (e.g. after a new pool find)."""
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    marker = SNAP_DIR / "trigger_refresh"
+    marker.write_text(f"{time.time()}\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "trigger": str(marker),
+        "note": "snapshot-refresher will rebuild within find_poll (~15s)",
+    }
+
+
 @app.get("/api/stats")
 def api_stats() -> Any:
-    snap = _load("stats.json")
-    if not isinstance(snap, dict):
-        return _json_response(snap, max_age=15)
+    """Top cards (hashrate, finds, network, …) — prefer live tides-web."""
     live = _fetch_live_json("/api/stats")
-    if isinstance(live, dict):
-        out = dict(snap)
-        for k in _STATS_FIND_KEYS:
-            if k in live:
-                out[k] = live[k]
-        # hashrate / window fill also feel stale after a find — prefer live when present
-        for k in (
-            "hashrate_hs",
-            "hashrate_hs_1h",
-            "window_work_filled",
-            "window_work_target",
-            "addresses_in_window",
-            "pool_network_share_pct",
-            "est_block_time_sec",
-            "network_hashrate_hs",
-        ):
-            if k in live:
-                out[k] = live[k]
-        return _json_response(out, max_age=5)
-    return _json_response(snap, max_age=30)
+    if isinstance(live, dict) and live:
+        return _json_response(live, max_age=5)
+    return _json_response(_load("stats.json"), max_age=30)
 
 
 @app.get("/api/info")

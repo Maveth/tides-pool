@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260907findwatch1" />
+  <link rel="stylesheet" href="/static/style.css?v=20260907livecards1" />
 </head>
 <body>
   <header class="top">
@@ -16,7 +16,7 @@
     <span
       id="snapFreshness"
       class="snap-freshness muted"
-      title="Most numbers: ~5 min snapshot. New pool finds, recent blocks, find stats, coinbaser, and gateway-class badges are watched live."
+      title="Top cards, blocks, coinbaser, gateway-class: live. Contributors/charts/miner pages: ~5 min snap (rebuilds immediately on a new pool find)."
       hidden
     ></span>
     <form id="lookup" class="lookup" action="/address" method="get">
@@ -39,13 +39,6 @@
           >
           <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
         </div>
-      </div>
-      <div id="findToast" class="find-toast" hidden role="status" aria-live="polite">
-        <div class="find-toast-body">
-          <strong class="find-toast-title">Pool block found</strong>
-          <span id="findToastMsg" class="find-toast-msg"></span>
-        </div>
-        <button type="button" id="findToastDismiss" class="find-toast-x" title="Dismiss">×</button>
       </div>
       <h1>RIPTIDE dashboard</h1>
       <p class="muted">
@@ -439,6 +432,6 @@ password = x</pre>
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260907findwatch1" defer></script>
+  <script src="/static/app.js?v=20260907livecards1" defer></script>
 </body>
 </html>
