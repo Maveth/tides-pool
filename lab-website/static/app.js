@@ -2500,6 +2500,122 @@ async function loadPool() {
   } catch (e) {
     console.error("pool chart", e);
   }
+  // Live block list may be ahead of snapshotted chart — pin find markers on the graph.
+  mergeLiveFindsIntoPoolChart(blocks);
+  const findH = Number(stats.last_pool_block_height || 0);
+  if (findH > 0) {
+    if (watchedFindHeight == null) watchedFindHeight = findH;
+    else if (findH > watchedFindHeight) {
+      watchedFindHeight = findH;
+      const b =
+        (blocks || []).find((x) => Number(x.height) === findH) ||
+        (blocks && blocks[0]) ||
+        null;
+      showFindToast(b, stats);
+    }
+  }
+}
+
+/** Last pool-find height we've shown; used by the live find watcher. */
+let watchedFindHeight = null;
+const FIND_WATCH_MS = 15000;
+
+function hideFindToast() {
+  const el = document.getElementById("findToast");
+  if (el) el.hidden = true;
+}
+
+function showFindToast(block, stats) {
+  const el = document.getElementById("findToast");
+  const msg = document.getElementById("findToastMsg");
+  if (!el || !msg) return;
+  const h = Number((block && block.height) || stats.last_pool_block_height || 0);
+  const nick = (block && (block.finder_nickname || "").trim()) || "";
+  const worker = (block && (block.finder_worker || "").trim()) || "";
+  const status = (block && block.status) || "pending";
+  const who = nick
+    ? escapeHtml(nick) + (worker ? ` · <span class="mono">${escapeHtml(worker)}</span>` : "")
+    : worker
+      ? `<span class="mono">${escapeHtml(worker)}</span>`
+      : "finder pending";
+  const href = block ? mempoolBlockHref(block, tidesInfo) : null;
+  const hCell = href
+    ? `<a href="${href}" target="_blank" rel="noopener" class="mono">#${h}</a>`
+    : `<span class="mono">#${h}</span>`;
+  msg.innerHTML = `${hCell} · ${who} · <span class="badge badge-${
+    status === "confirmed" ? "ok" : status === "pending" ? "pending" : "ok"
+  }">${escapeHtml(status)}</span> · blocks table + chart updated`;
+  el.hidden = false;
+  // Auto-hide after a couple minutes (user can dismiss sooner).
+  clearTimeout(showFindToast._t);
+  showFindToast._t = setTimeout(hideFindToast, 120000);
+}
+
+/** Inject live /api/blocks finds onto the pool chart (snap chart may lag). */
+function mergeLiveFindsIntoPoolChart(apiBlocks) {
+  if (!poolChartObj || !Array.isArray(apiBlocks) || !apiBlocks.length) return;
+  const dsIn = (poolChartObj.data.datasets || []).find(
+    (d) => d && d.label === "Block found"
+  );
+  if (!dsIn) return;
+  const existing = new Set((dsIn.data || []).map((p) => Number(p.height)));
+  let y =
+    (dsIn.data && dsIn.data[0] && Number(dsIn.data[0].y)) ||
+    (poolChartObj.scales &&
+      poolChartObj.scales.yPool &&
+      poolChartObj.scales.yPool.max * 0.92) ||
+    1;
+  let added = 0;
+  for (const b of apiBlocks) {
+    const height = Number(b && b.height);
+    if (!height || existing.has(height)) continue;
+    const ms = b.accounted_at ? Date.parse(b.accounted_at) : NaN;
+    if (!Number.isFinite(ms)) continue;
+    dsIn.data.push({
+      x: ms,
+      y,
+      height,
+      block_hash: b.block_hash,
+      worker: b.finder_worker,
+      nickname: b.finder_nickname,
+    });
+    existing.add(height);
+    added += 1;
+  }
+  if (added) poolChartObj.update("none");
+}
+
+async function pollForNewFinds() {
+  if (document.visibilityState === "hidden") return;
+  try {
+    const stats = await jget("/api/stats");
+    const h = Number(stats && stats.last_pool_block_height) || 0;
+    if (!h) return;
+    if (watchedFindHeight == null) {
+      watchedFindHeight = h;
+      return;
+    }
+    if (h <= watchedFindHeight) return;
+    watchedFindHeight = h;
+    const blocks = await jget("/api/blocks?limit=8");
+    const b =
+      (blocks || []).find((x) => Number(x.height) === h) ||
+      (blocks && blocks[0]) ||
+      null;
+    showFindToast(b, stats);
+    const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
+    const addr = qs("a");
+    if (path === "/blocks") {
+      await loadBlocksPage();
+    } else if (!addr) {
+      await loadPool();
+    } else {
+      // Miner page open — still refresh chart markers if pool chart exists
+      mergeLiveFindsIntoPoolChart(blocks || []);
+    }
+  } catch (e) {
+    console.error("find watch", e);
+  }
 }
 
 async function loadBlocksPage() {
@@ -2846,8 +2962,10 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
 
   refreshHealthStrip().catch((e) => console.error("health", e));
 
+  const dismiss = document.getElementById("findToastDismiss");
+  if (dismiss) dismiss.addEventListener("click", hideFindToast);
+
   // Soft 60s refresh for the active dashboard view (paused when tab hidden).
-  // Was 30s — web CPU spiked under multi-tab load; cache layer next.
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
     refreshHealthStrip().catch((e) => console.error("health", e));
@@ -2860,4 +2978,13 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
       loadPool().catch((e) => console.error("refresh pool", e));
     }
   }, 60000);
+
+  // Live find watcher — poll stats often; on new height, toast + refresh blocks/chart.
+  setInterval(() => {
+    pollForNewFinds().catch((e) => console.error("find watch", e));
+  }, FIND_WATCH_MS);
+  // First poll soon after load (seed watchedFindHeight without toasting).
+  setTimeout(() => {
+    pollForNewFinds().catch((e) => console.error("find watch", e));
+  }, 3000);
 })();
