@@ -63,11 +63,11 @@ async function refreshSnapFreshness(health) {
   const ageSec = Number.isFinite(t) ? (Date.now() - t) / 1000 : null;
   const ageTxt = ageSec != null ? fmtSnapAge(ageSec) : "unknown age";
   const tip =
-    "Numbers on this page are from a periodic snapshot of the live pool APIs (target every 5 minutes). " +
+    "Most dash numbers come from a periodic snapshot (~5 min). " +
+    "New pool finds / recent blocks, find stats, coinbaser, and gateway-class badges are live. " +
     "How-to / connect text is always current. " +
-    "For fresher JSON, hit the live API host :8087 /api/* (not snapshotted). " +
-    `Last snap: ${asOf}`;
-  const short = `snapshot ${ageTxt} · ~5 min`;
+    `Last full snap: ${asOf}`;
+  const short = `snap ${ageTxt} · finds live`;
   if (header) {
     header.hidden = false;
     header.textContent = short;

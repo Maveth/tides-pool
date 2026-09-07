@@ -23,8 +23,10 @@ services:
       LAB_SNAP_DIR: /app/snapshots
       LAB_STATIC_DIR: /app/static
       LAB_SHOW_BANNER: "0"
-      # Live overlays: gateway class + manual payout tables
+      # Live overlays: gateway class + manual payout tables + live blocks/finds
       TIDES_DATABASE_URL: postgresql://tides:tides@deploy-postgres-1:5432/tides
+      LAB_LIVE_WEB: http://deploy-tides-web-1:8080
+      LAB_LIVE_HTTP_TIMEOUT_SEC: "6"
       LAB_CB_TYPE_TTL_SEC: "15"
     restart: unless-stopped
     networks:

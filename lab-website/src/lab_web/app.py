@@ -1,6 +1,9 @@
 """Public/lab RIPTIDE UI: mostly snapshot-backed APIs + a few live overlays.
 
-Snapshots (≈5 min): stats, coinbaser, contrib work, charts, miner pages, blocks base.
+Snapshots (≈5 min): coinbaser, contrib work, charts, miner pages, stats base.
+Live (short timeout, snap fallback):
+  - /api/blocks — new finds must show immediately
+  - /api/stats — last_pool_block_* / find counters overlaid from live
 Live overlays (DB meta, short TTL):
   - contributors: cb_type_status / cb_type_tip (gateway coinbase class ✓/⚠/?)
   - blocks: manual_adjustment (LISTED_ONLY payout table)
@@ -12,6 +15,8 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +27,12 @@ from fastapi.staticfiles import StaticFiles
 SNAP_DIR = Path(os.environ.get("LAB_SNAP_DIR", "/app/snapshots"))
 STATIC_DIR = Path(os.environ.get("LAB_STATIC_DIR", "/app/static"))
 DATABASE_URL = os.environ.get("TIDES_DATABASE_URL", "").strip()
+LIVE_WEB = os.environ.get("LAB_LIVE_WEB", "http://deploy-tides-web-1:8080").rstrip("/")
+LIVE_HTTP_TIMEOUT = float(os.environ.get("LAB_LIVE_HTTP_TIMEOUT_SEC", "6"))
 
 _ADDR_RE = re.compile(r"^[a-zA-Z0-9]{8,128}$")
 
-app = FastAPI(title="RIPTIDE lab-website", version="0.4.0")
+app = FastAPI(title="RIPTIDE lab-website", version="0.4.1")
 
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -73,6 +80,28 @@ def _load_user_file(address: str, name: str) -> Any:
             detail=f"no snapshot for user {address} ({name}) — re-run snapshot-builder",
         )
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _fetch_live_json(path: str, *, timeout: float | None = None) -> Any | None:
+    """Best-effort live tides-web JSON. None on any failure (use snap)."""
+    if not LIVE_WEB:
+        return None
+    url = LIVE_WEB + path
+    try:
+        with urllib.request.urlopen(url, timeout=timeout or LIVE_HTTP_TIMEOUT) as r:
+            return json.loads(r.read().decode())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+
+
+_STATS_FIND_KEYS = (
+    "last_pool_block_height",
+    "last_pool_block_at",
+    "last_pool_block_age_sec",
+    "blocks_last_24h",
+    "blocks_last_7d",
+    "chain_height",
+)
 
 
 def _db_fetch_meta(key: str) -> Any | None:
@@ -220,7 +249,10 @@ def health() -> Any:
         h["live_overlays"] = {
             "cb_type": bool(DATABASE_URL),
             "manual_adjustment": bool(DATABASE_URL),
+            "blocks_live": bool(LIVE_WEB),
+            "stats_find_live": bool(LIVE_WEB),
             "cb_type_ttl_sec": _CB_TYPE_TTL,
+            "live_web": LIVE_WEB or None,
         }
     return h
 
@@ -232,7 +264,30 @@ def api_meta() -> Any:
 
 @app.get("/api/stats")
 def api_stats() -> Any:
-    return _json_response(_load("stats.json"))
+    snap = _load("stats.json")
+    if not isinstance(snap, dict):
+        return _json_response(snap, max_age=15)
+    live = _fetch_live_json("/api/stats")
+    if isinstance(live, dict):
+        out = dict(snap)
+        for k in _STATS_FIND_KEYS:
+            if k in live:
+                out[k] = live[k]
+        # hashrate / window fill also feel stale after a find — prefer live when present
+        for k in (
+            "hashrate_hs",
+            "hashrate_hs_1h",
+            "window_work_filled",
+            "window_work_target",
+            "addresses_in_window",
+            "pool_network_share_pct",
+            "est_block_time_sec",
+            "network_hashrate_hs",
+        ):
+            if k in live:
+                out[k] = live[k]
+        return _json_response(out, max_age=5)
+    return _json_response(snap, max_age=30)
 
 
 @app.get("/api/info")
@@ -242,17 +297,25 @@ def api_info() -> Any:
 
 @app.get("/api/coinbaser")
 def api_coinbaser() -> Any:
+    # Prefer live after finds so "if we find now" split matches tip
+    live = _fetch_live_json("/api/coinbaser", timeout=max(LIVE_HTTP_TIMEOUT, 12.0))
+    if live is not None:
+        return _json_response(live, max_age=5)
     return _json_response(_load("coinbaser.json"))
 
 
 @app.get("/api/blocks")
 def api_blocks(limit: int = Query(8, ge=1, le=200)) -> Any:
+    # New finds must not wait for the 5-min snapper
+    live = _fetch_live_json(f"/api/blocks?limit={int(limit)}")
+    if isinstance(live, list) and live:
+        rows = _overlay_manual_adjustments(live)
+        return _json_response(rows, max_age=5)
     rows = _load("blocks.json")
     if not isinstance(rows, list):
         rows = rows.get("rows") if isinstance(rows, dict) else []
     rows = rows[: int(limit)]
     rows = _overlay_manual_adjustments(rows)
-    # short cache — adj overlay is live
     return _json_response(rows, max_age=15)
 
 
