@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RIPTIDE</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260907sv1howto2" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <a href="/">RIPTIDE</a>
+      <span class="tag">mainnet · Blake2b · DATUM preferred</span>
+    </div>
+    <a id="healthStrip" class="health-strip health-unknown" href="/health" title="Pool / Prime health">…</a>
+    <span
+      id="snapFreshness"
+      class="snap-freshness muted"
+      title="Dashboard numbers come from a periodic snapshot of the live APIs (target every 5 minutes). How-to / connect copy is always current. Soft UI refresh is ~60s and re-reads the latest snapshot. Want fresher JSON? Use live APIs on :8087 (same paths under /api/…)."
+      hidden
+    ></span>
+    <form id="lookup" class="lookup" action="/address" method="get">
+      <input name="a" id="addrInput" type="text" placeholder="Lookup payout address…" autocomplete="off" spellcheck="false" />
+      <button type="submit">Look up</button>
+    </form>
+  </header>
+
+  <main>
+    <section id="poolView">
+      <div class="promo-stack">
+        <div
+          class="fee-promo"
+          title="DATUM / own Gateway: 0% coinbaser fee. Pool SV1 stratum: variable work fee (currently 2%); half of that skim goes to live miners as STRATUM FEE."
+          role="status"
+        >
+          <span class="fee-promo-main"
+            ><strong>0%</strong> for DATUM · SV1 work fee
+            <strong>variable (currently 2%)</strong>, half to miners</span
+          >
+          <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
+        </div>
+      </div>
+      <h1>RIPTIDE dashboard</h1>
+      <p class="muted">
+        Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.
+        <span id="snapFreshnessInline" class="snap-freshness-inline"></span>
+      </p>
+
+      <details class="connect-panel connect-panel-top" id="connectPanel">
+        <summary>
+          <span class="connect-title">How to connect</span>
+          <span class="connect-hint muted">Preferred: CONVOY + PR #10 from source · StartOS sideload · checklist</span>
+        </summary>
+        <div class="connect-body">
+          <div class="alert box" id="reopenNote" role="status">
+            <strong>Coinbaser enforcement is on.</strong>
+            Multi-out windows reject type-0 / <code>coinbase_id=0</code> shares (reject 27 — no credit).
+            Prefer <strong>CONVOY + largest-coinbase (PR&nbsp;#10)</strong> from source below so the full TIDES split is not truncated.
+          </div>
+
+          <div class="join box" id="joinBox">
+            <h2>
+              DATUM → this pool
+              <span class="join-badge join-badge-pref">preferred · 0% fees</span>
+            </h2>
+            <p class="muted">
+              You run <strong>your own</strong> Knots + DATUM. Miners talk to <em>your</em> Gateway. Your Gateway talks to this pool.
+              Coinbaser fee is <strong>0%</strong>.
+              <span class="muted" title="SV1 miners pay a work skim; half is redistributed to live miners as STRATUM FEE — DATUM miners can receive that share when active.">
+                (Tech note: you may also earn part of the SV1 <code>STRATUM FEE</code> redistributed to live miners — 50% of that path’s skim.)
+              </span>
+            </p>
+            <pre id="joinPre">Loading…</pre>
+            <p class="muted">Paste the Prime <code>pool_pubkey</code> (128 hex) into DATUM if your build does not auto-fetch it.</p>
+          </div>
+
+          <div class="join box join-sv1" id="joinSv1Box">
+            <h2>
+              Pool SV1 stratum
+              <span class="join-badge join-badge-discouraged">strongly discouraged</span>
+            </h2>
+            <p>
+              Point ASICs straight at the pool stratum — <strong>no</strong> your-own Knots/DATUM.
+              <span class="fee-warn-red"><strong>Variable work fee (currently 2%)</strong></span>
+              — half of that skim → live miners (<code>STRATUM FEE</code>), half → ops.
+              Prefer <strong>DATUM</strong> above (0% fees).
+            </p>
+            <pre id="joinSv1Pre">stratum+tcp://riptide.maveth.ca:23337
+username = bc1…yourpayout.worker
+password = x</pre>
+            <ul class="connect-stores">
+              <li><strong>URL:</strong> <code>stratum+tcp://riptide.maveth.ca:23337</code> (same port on <code>tides.maveth.ca</code>)</li>
+              <li><strong>Username:</strong> payout address + worker — e.g. <code>bc1q….rig1</code></li>
+              <li><strong>Password:</strong> <code>x</code> (anything non-empty usually works)</li>
+              <li class="fee-warn-red"><strong>Fee:</strong> variable work skim (currently <strong>2%</strong>) · 50% to miners as <code>STRATUM FEE</code> · 50% ops</li>
+            </ul>
+          </div>
+
+                    <div class="warn box" id="joinDatumWarn">
+            <p class="muted" style="margin-top:0">
+              <strong>This pool’s Prime dual-speaks configure:</strong>
+              CONVOY UAs get <strong>v3 + ABW disabled</strong>; classic Leo Blake packages stay on <strong>v1</strong> (unchanged).
+            </p>
+            <strong>Preferred DATUM Gateway — CONVOY + PR&nbsp;#10 (YUGE):</strong>
+            <ul class="connect-stores">
+              <li>
+                <strong>Prefer source (now):</strong>
+                <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10</a>
+                — CONVOY +
+                <a href="https://github.com/CONVOYMining/datum_gateway/pull/10" target="_blank" rel="noopener">PR&nbsp;#10</a>
+                <em>“Serve every miner the largest coinbase class on BLAKE2b work”</em>.
+                Without that patch, older builds can use a <strong>small class (~17 outs / “type&nbsp;2”)</strong> and
+                <strong>truncate</strong> the pool split (remainder → ops). Empty jobs (<code>coinbase_id=0</code>) are reject&nbsp;27.
+              </li>
+              <li>
+                <strong>Prefer Luke / CONVOY upstream source (when PR&nbsp;#10 is merged):</strong>
+                build
+                <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
+                <code>master</code> (Luke lineage) directly — <strong>not</strong> the MaVeTh fork. Drop the fork when you no longer need it.
+              </li>
+            </ul>
+            <br />
+            <strong>StartOS binaries (same CONVOY + PR&nbsp;#10 Gateway, packaged) — download &amp; sideload:</strong>
+            <ul class="connect-stores">
+              <li>
+                <a href="https://github.com/Maveth/datum-gateway-startos/releases/download/pow_0.4.1_23/datum_aarch64.s9pk" target="_blank" rel="noopener"><strong>datum_aarch64.s9pk</strong></a>
+                — Raspberry Pi / ARM Start9 (most users)
+              </li>
+              <li>
+                <a href="https://github.com/Maveth/datum-gateway-startos/releases/download/pow_0.4.1_23/datum_x86_64.s9pk" target="_blank" rel="noopener"><strong>datum_x86_64.s9pk</strong></a>
+                — Intel / AMD Start9
+              </li>
+              <li>
+                Release notes / checksums:
+                <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_23" target="_blank" rel="noopener"><code>pow_0.4.1_23</code></a>
+                (<code>#pow:0.4.1:23</code>)
+              </li>
+            </ul>
+            Prefer <strong>source</strong> (MaVeTh <code>convoy-pr10</code> now; Luke/CONVOY upstream when merged) when you can;
+            StartOS <code>.s9pk</code> is the same CONVOY+PR&nbsp;#10 stack for one-click install.
+            <br /><br />
+            <strong>Other packages (not preferred):</strong>
+            various versions exist and may work, but they can have bugs in them. Prefer CONVOY + PR&nbsp;#10 source or
+            <code>pow_0.4.1_23</code> above.
+          </div>
+
+<div class="warn box" id="joinCbTypeWarn">
+            <strong>Contributor icons ✓ / ⚠ / ?</strong> (next to addresses):
+            recent multi-out share health for <em>your</em> Gateway’s coinbase class.
+            <ul class="connect-stores">
+              <li><strong>✓</strong> — recent accepts look like a large split (type-2 share of multi-out below threshold). Sticky until a bad window.</li>
+              <li><strong>⚠</strong> — recent accepts are heavy on small/truncate-class jobs (often CONVOY without
+                <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">PR&nbsp;#10 / YUGE</a>).
+                Sticky until a later check sees a clean window. Not the same as quarantine.</li>
+              <li><strong>?</strong> — not enough recent multi-out accepts to classify yet.</li>
+            </ul>
+            Hover the icon for this miner’s %. Empty-job rejects (<code>coinbase_id=0</code>) do not drive this badge.
+          </div>
+
+          <div class="warn box" id="joinFullPassWarn">
+            <strong>Do NOT enable Pool Pass Full Users</strong> on this pool.
+            Incorrect setup rejects your shares (<code>bad payout address</code> / reject 14).
+            Use <strong>Send Miner Usernames To Pool → Send as worker names</strong> instead,
+            and put only a worker name in the miner (e.g. <code>rig1</code>).
+            Your Gateway <code>mining.pool_address</code> is then the payout address.
+            <figure class="connect-shot">
+              <img
+                src="/static/pool_pass_full.png?v=20260907sv1howto2"
+                alt="DATUM config: leave Pool Pass Full Users unchecked; use Send as worker names"
+                width="640"
+                height="360"
+                loading="lazy"
+              />
+              <figcaption class="muted">Leave <em>Pool Pass Full Users</em> off. Wrong combo = rejected shares.</figcaption>
+            </figure>
+          </div>
+
+          <div class="warn box">
+            <strong>Your own Knots node is required</strong> (Blake2b mainnet). Point DATUM
+            <code>bitcoind</code> RPC at it. Experimental pool — no back-pay if we go down.
+          </div>
+
+          <div class="rules">
+            <h3>Checklist</h3>
+            <ul>
+              <li><strong>Knots:</strong> mainnet · Blake2b · synced · RPC for DATUM.</li>
+              <li><strong>DATUM (preferred):</strong> source
+                <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">Maveth/datum_gateway-convoy @ convoy-pr10</a>
+                (or StartOS <code>pow_0.4.1_23</code> — same CONVOY+PR&nbsp;#10). When
+                <a href="https://github.com/CONVOYMining/datum_gateway/pull/10" target="_blank" rel="noopener">PR&nbsp;#10</a>
+                merges, prefer Luke/CONVOY upstream
+                <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
+                <code>master</code> instead of the fork.</li>
+              <li><strong>DATUM → pool:</strong> <code>pool_host=tides.maveth.ca</code> <code>pool_port=28916</code> (LAN: NAS IP).</li>
+              <li><strong>Payout:</strong> <code>mining.pool_address</code> = your <code>bc1…</code> / <code>1…</code>.</li>
+              <li><strong>Usernames:</strong> <strong>Pool Pass Full Users = OFF</strong> · miners = worker name only (e.g. <code>rig1</code>).</li>
+              <li><strong>Tag:</strong> <code>coinbase_tag_secondary</code> = your name; primary is <code>RIPTIDE</code> (pool-set).</li>
+              <li><strong>Miners:</strong> point ASICs at <em>your</em> Gateway stratum — never port <code>28916</code>.</li>
+              <li><strong>Pool SV1 (strongly discouraged):</strong> see box above —
+                <code>riptide.maveth.ca:23337</code> · <code>bc1….worker</code> · password <code>x</code>
+                · <span class="fee-warn-red">fee currently 2%</span>.</li>
+              <li><strong>Fallback:</strong> keep solo / another pool configured.</li>
+            </ul>
+          </div>
+        </div>
+      </details>
+
+      <div class="cards" id="poolCards">Loading…</div>
+
+      <div class="box dashboard-panel" id="poolChartBox">
+        <div class="chart-head">
+          <h2>Hashrate &amp; finds</h2>
+          <div class="chart-ranges" id="poolChartRanges" role="group" aria-label="Chart range">
+            <button type="button" data-range="1h">1h</button>
+            <button type="button" data-range="24h" class="active">24h</button>
+            <button type="button" data-range="7d">1w</button>
+            <button type="button" data-range="window" title="Payout window (7 confirmed finds + current) — length follows find rate">Window</button>
+          </div>
+        </div>
+        <p class="muted chart-sub" hidden></p>
+        <div class="chart-wrap"><canvas id="poolChart" aria-label="Pool and network hashrate chart"></canvas></div>
+      </div>
+
+      <div class="box dashboard-panel" id="coinbaserBox">
+        <h2>If we find a block now</h2>
+        <p class="muted">Same payout split Prime sends Gateways (cached window, live template value). Fee / window details are in the footnote below.</p>
+        <p class="muted" id="coinbaserNote"></p>
+        <div class="coinbaser-pie-wrap">
+          <canvas id="coinbaserPie" aria-label="Next-block payout split pie chart"></canvas>
+        </div>
+        <p class="table-more muted" id="coinbaserTableToggleWrap">
+          <button type="button" id="coinbaserTableToggle">Show payout lines</button>
+        </p>
+        <div id="coinbaserTablePanel" hidden>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th title="⛏️ mining / window work share · ⚙️ ops fee (if any)">Kind</th><th>Payout worker</th><th>Nickname</th><th>Address</th><th>Amount (BTC)</th></tr>
+              </thead>
+              <tbody id="coinbaserBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <p class="table-more muted" id="coinbaserMore" hidden></p>
+        </div>
+      </div>
+
+      <div class="stack-panels">
+        <div>
+          <h2>Contributors</h2>
+          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <strong>% Blocks w Shares</strong> = share of those block-periods where you had any shares — not the same as payout %. <strong>Total work</strong> is this window only — not lifetime. <strong>10 per page</strong> — use Prev/Next under the table.</p>
+          <div class="contrib-toolbar muted">
+            <div class="activity-legend">
+              <span class="activity-legend-item"><span class="activity-dot live" title="Shares in the last ~10 minutes"></span>hashing now</span>
+              <span class="activity-legend-item"><span class="activity-dot idle" title="Work on this block, but quiet lately"></span>this block, idle</span>
+              <span class="activity-legend-item"><span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span>no work this block</span>
+              <span class="activity-legend-item" title="See How to connect — CONVOY PR #10 / coinbase class"><span class="cb-type-ico cb-type-ok">✓</span>/<span class="cb-type-ico cb-type-warn">⚠</span> Gateway coinbase class</span>
+            </div>
+            <div class="contrib-sort-bar" id="contribSortBar" hidden>
+              <label>Group by
+                <select id="contribGroup" class="contrib-sort-sel" title="Group matching nicknames">
+                  <option value="">—</option>
+                  <option value="nickname">Nickname</option>
+                </select>
+              </label>
+              <label>Sort by
+                <select id="contribSort" class="contrib-sort-sel" title="Sort rows or groups">
+                  <option value="work">Total work</option>
+                  <option value="address">Address</option>
+                  <option value="nickname">Nickname</option>
+                  <option value="shares">Shares</option>
+                  <option value="this_block">This block</option>
+                  <option value="hashrate">Hashrate</option>
+                  <option value="pct">Payout %</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>#</th>
+                  <th>Address</th>
+                  <th title="Last coinbase secondary tag seen when this address found a block">Nickname</th>
+                  <th>Shares</th>
+                  <th title="Percent of window block-periods where this address had any shares (e.g. 50% ≈ 4 of 8). Not payout % — payout is still total work ÷ window work.">% Blocks w Shares</th>
+                  <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
+                  <th title="Total work in the payout window only (7 confirmed finds + current) — not lifetime">Total work</th>
+                  <th>~H/s</th>
+                  <th>Payout %</th>
+                </tr>
+              </thead>
+              <tbody id="contribBody"><tr><td colspan="10">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <p class="table-more muted" id="contribMore" hidden></p>
+        </div>
+        <div class="recent-blocks-panel">
+          <h2>Recent pool blocks <span class="muted" style="font-weight:400;font-size:0.9rem">(last 8 · orphans shown in red)</span></h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Height</th>
+                  <th>Status</th>
+                  <th title="Stratum worker that submitted the block share">Worker</th>
+                  <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
+                  <th>Address</th>
+                  <th>Reward</th>
+                  <th>Diff</th>
+                  <th title="Elapsed time since the pool accounted this find">Ago</th>
+                </tr>
+              </thead>
+              <tbody id="blocksBody"><tr><td colspan="8">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <p class="more-link"><a href="/blocks">More blocks →</a></p>
+        </div>
+      </div>
+
+      <p class="footnote" id="feeFootnote">Loading fee schedule…</p>
+    </section>
+
+    <section id="blocksView" class="hidden">
+      <p><a href="/">&larr; RIPTIDE dashboard</a></p>
+      <h1>Pool blocks</h1>
+      <p class="muted">Newest first · up to 100 recent finds (confirmed, pending, orphaned).</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Height</th>
+              <th>Status</th>
+              <th title="Stratum worker that submitted the block share">Worker</th>
+              <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
+              <th>Address</th>
+              <th>Reward</th>
+              <th>Diff</th>
+              <th title="Elapsed time since the pool accounted this find">Ago</th>
+            </tr>
+          </thead>
+          <tbody id="blocksAllBody"><tr><td colspan="8">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="userView" class="hidden">
+      <p><a href="/">&larr; RIPTIDE dashboard</a></p>
+      <p class="muted" id="userSubtitle">Miner dashboard</p>
+      <h1 id="userTitle">Address</h1>
+      <div class="cards" id="userCards">Loading…</div>
+
+      <div class="box dashboard-panel" id="userWorkersBox" hidden>
+        <h2>Workers</h2>
+        <p class="muted chart-sub">Same payout address · window = 7 confirmed finds + current · hover a row for work &amp; est. next</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th title="Accepted shares in the payout window">Shares</th>
+                <th title="Rough hashrate from recent shares (~10m)">~H/s</th>
+                <th title="Click to show/hide work + est. next payout">Details</th>
+              </tr>
+            </thead>
+            <tbody id="userWorkerBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="box dashboard-panel" id="userChartBox">
+        <div class="chart-head">
+          <h2>Your hashrate</h2>
+          <div class="chart-ranges" id="userChartRanges" role="group" aria-label="Chart range">
+            <button type="button" data-range="1h">1h</button>
+            <button type="button" data-range="24h" class="active">24h</button>
+            <button type="button" data-range="7d">1w</button>
+            <button type="button" data-range="window" title="Payout window (7 confirmed finds + current) — length follows find rate">Window</button>
+          </div>
+        </div>
+        <p class="muted chart-sub">From your accepted shares · axis in TH/s · markers = your finds</p>
+        <div class="worker-chart-filters muted" id="userWorkerFilters" hidden></div>
+        <div class="chart-wrap"><canvas id="userChart" aria-label="Miner hashrate chart"></canvas></div>
+      </div>
+
+      <details class="miner-panel" id="payoutHistoryPanel">
+        <summary>
+          <span class="connect-title">Payout history</span>
+          <span class="muted connect-hint" id="payoutHistoryHint">TIDES share lines · click to expand</span>
+        </summary>
+        <div class="miner-panel-body">
+          <p class="muted chart-sub">Reconstructed from pool finds (same math as Total earned). Newest first.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Height</th><th>Kind</th><th>Amount</th><th>Status</th><th title="Visitor local timezone">When</th></tr>
+              </thead>
+              <tbody id="payoutHistoryBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+
+      <details class="miner-panel" id="sharesPanel">
+        <summary>
+          <span class="connect-title">Recent shares</span>
+          <span class="muted connect-hint" id="sharesHint">paginated · chart covers the trend</span>
+        </summary>
+        <div class="miner-panel-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Seq</th><th>Worker</th><th>Work</th><th title="Visitor local timezone">When</th></tr>
+              </thead>
+              <tbody id="sharesBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="pager" id="sharesPager" hidden>
+            <button type="button" id="sharesPrev" disabled>Newer</button>
+            <span class="muted" id="sharesPageLabel">—</span>
+            <button type="button" id="sharesNext" disabled>Older</button>
+          </div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footerMeta"></span>
+    · <a href="/docs">API</a>
+    · <a href="/health">health</a>
+  </footer>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="/static/app.js?v=20260907sv1howto2" defer></script>
+</body>
+</html>
