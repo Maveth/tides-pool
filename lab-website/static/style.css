@@ -191,6 +191,39 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
   cursor: help;
 }
+.find-toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0.25rem;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(240, 180, 41, 0.55);
+  background: linear-gradient(135deg, rgba(240, 180, 41, 0.22), rgba(61, 214, 198, 0.12));
+  box-shadow: 0 0 0 1px rgba(255, 224, 138, 0.15);
+  animation: findPulse 1.2s ease-in-out 2;
+}
+.find-toast[hidden] { display: none !important; }
+.find-toast-body { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.find-toast-title { color: #ffe08a; font-size: 0.95rem; }
+.find-toast-msg { font-size: 0.9rem; color: var(--text); word-break: break-word; }
+.find-toast-msg a { color: #7ddea8; }
+.find-toast-x {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+}
+.find-toast-x:hover { color: var(--text); }
+@keyframes findPulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.12); }
+}
 .snap-freshness-inline {
   font-size: 0.9em;
   opacity: 0.85;
