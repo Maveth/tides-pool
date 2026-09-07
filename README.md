@@ -2,16 +2,20 @@
 
 **DATUM Prime + TIDES** mining pool for **Bitcoin mainnet Blake2b (BIP110 / RDTS)**.
 
-Public site: **[https://tides.maveth.ca/](https://tides.maveth.ca/)** (RIPTIDE dashboard)  
+Public site: **[https://riptide.maveth.ca/](https://riptide.maveth.ca/)** / **[https://tides.maveth.ca/](https://tides.maveth.ca/)** (RIPTIDE dashboard)  
 Prime: **`tides.maveth.ca:28916`**
 
-Miners do **not** stratum to this host for work templates. Your **DATUM Gateway** builds jobs and talks to Prime for coinbaser + share accounting.
+Miners do **not** stratum to Prime for work templates. Your **DATUM Gateway** builds jobs and talks to Prime for coinbaser + share accounting.
 
 ```text
 ASIC/GPU  →  YOUR DATUM Gateway (Blake2b)  →  tides-pool Prime (:28916)
                                               ↑ coinbaser + TIDES shares
-Stats UI  ←  HTTP (:8088)  [web process; restarts without bouncing Prime]
+Stats UI  ←  HTTP (:8088)  [lab-website snapshot dash — see lab-website/]
+Live API  ←  HTTP (:8087)  [deploy-tides-web — source for snaps / fresher JSON]
 ```
+
+**Public dash architecture:** [`lab-website/`](lab-website/) + [`docs/SITE_SNAPSHOT.md`](docs/SITE_SNAPSHOT.md)
+(5‑min snapshots + live gateway-class / manual-adjustment overlays).
 
 Related Gateway builds:
 
@@ -54,12 +58,11 @@ Stats + connect copy: **https://tides.maveth.ca/**
 
 ## Fees (live policy)
 
-Fee is configured with `TIDES_FEE_BPS` (and optional finder share of that fee).
+- **DATUM / own Gateway (preferred):** `TIDES_FEE_BPS=0` — coinbase = window work only (no ops cut).
+- **Pool SV1** `riptide.maveth.ca:23337` (**strongly discouraged**): separate **work skim** via `meta.runtime_fees` / `local_work_fee_bps` (currently **2%**); half → live miners as `STRATUM FEE`, half → ops. Not a coinbaser cut.
+- Username on SV1: `bc1…payout.worker`, password `x`.
 
-- **Live often runs `TIDES_FEE_BPS=0`**: coinbase = window work only (no ops cut, no in-coinbase finder bonus). Any finder thank-you is **manual / off-chain**.
-- When fee &gt; 0: classic TIDES split (ops keep + previous-finder credit on the next coinbase).
-
-Do not assume README fee math matches production without checking `/api/stats` → `fee_bps`.
+Do not assume README fee math matches production without checking `/api/stats` → `fee_bps` and site How to connect.
 
 ## Run (TrueNAS / Docker)
 
@@ -73,9 +76,11 @@ docker compose -f docker-compose.yml -f docker-compose.split.yml up -d --build
 
 | Process | Role | Ports |
 |---------|------|-------|
-| `tides-web` | UI + `/api/*` | host **8088** |
+| `lab-website` | Public snapshot UI + overlays | host **8088** (see `lab-website/`) |
+| `tides-web` | Live `/api/*` (snap source) | host **8087** |
 | `tides-prime` | DATUM Prime + coinbaser | host **28916** (+ health **8089**) |
 | `postgres` | share / block DB | internal |
+| `bip110-datum-sv1` | Pool SV1 stratum (discouraged) | host **23337** |
 
 Single-process (lab / legacy): `docker compose up -d --build` with `TIDES_ROLE=all`.
 

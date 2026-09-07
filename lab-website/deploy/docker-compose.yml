@@ -1,0 +1,74 @@
+# Lab cached website — isolated from deploy-tides-web-1 (:8088)
+# Usage (on NAS):
+#   cd /mnt/Alexandria/bitcoin/lab-website/deploy
+#   docker compose -p lab-website up -d --build
+#   docker compose -p lab-website run --rm snapshot-builder
+name: lab-website
+
+services:
+  lab-web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: lab-website:0.1
+    container_name: lab-website-1
+    ports:
+      # Public site (NPM → :8088). Live real-time APIs stay on tides-web :8087.
+      # Lab dataset/code kept on disk for next upgrade — no :8090 publish.
+      - "0.0.0.0:8088:8080"
+    volumes:
+      - /mnt/Alexandria/bitcoin/lab-website/snapshots:/app/snapshots
+      - /mnt/Alexandria/bitcoin/lab-website/static:/app/static:ro
+    environment:
+      LAB_SNAP_DIR: /app/snapshots
+      LAB_STATIC_DIR: /app/static
+      LAB_SHOW_BANNER: "0"
+      # Live overlays: gateway class + manual payout tables + live blocks/finds
+      TIDES_DATABASE_URL: postgresql://tides:tides@deploy-postgres-1:5432/tides
+      LAB_LIVE_WEB: http://deploy-tides-web-1:8080
+      LAB_LIVE_HTTP_TIMEOUT_SEC: "6"
+      LAB_CB_TYPE_TTL_SEC: "15"
+    restart: unless-stopped
+    networks:
+      - deploy_default
+
+  # One-shot: docker compose -p lab-website run --rm snapshot-builder
+  snapshot-builder:
+    image: lab-website:0.1
+    volumes:
+      - /mnt/Alexandria/bitcoin/lab-website/snapshots:/app/snapshots
+    environment:
+      LAB_SNAP_DIR: /app/snapshots
+      TIDES_DATABASE_URL: postgresql://tides:tides@deploy-postgres-1:5432/tides
+      LAB_LIVE_WEB: http://deploy-tides-web-1:8080
+      LAB_USER_CONCURRENCY: "8"
+      LAB_USER_ADDR_LIMIT: "500"
+      LAB_USER_SHARE_LIMIT: "200"
+      LAB_USER_PAYOUT_LIMIT: "100"
+    networks:
+      - deploy_default
+    entrypoint: ["python", "-m", "lab_web.build_snapshots"]
+
+  # Continuous: full pool + /api/user/* snaps on a 5-minute cadence
+  snapshot-refresher:
+    image: lab-website:0.1
+    container_name: lab-website-snap-1
+    volumes:
+      - /mnt/Alexandria/bitcoin/lab-website/snapshots:/app/snapshots
+      - ./snapshot_loop.sh:/app/snapshot_loop.sh:ro
+    environment:
+      LAB_SNAP_DIR: /app/snapshots
+      LAB_LIVE_WEB: http://deploy-tides-web-1:8080
+      LAB_SNAP_INTERVAL_SEC: "300"
+      LAB_USER_CONCURRENCY: "8"
+      LAB_USER_ADDR_LIMIT: "500"
+      LAB_USER_SHARE_LIMIT: "200"
+      LAB_USER_PAYOUT_LIMIT: "100"
+    networks:
+      - deploy_default
+    restart: unless-stopped
+    entrypoint: ["sh", "/app/snapshot_loop.sh"]
+
+networks:
+  deploy_default:
+    external: true

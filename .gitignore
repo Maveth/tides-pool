@@ -23,4 +23,7 @@ deploy/datum-pool/postgres-data/
 deploy/postgres-data/
 deploy/docker-compose.lab.yml
 
+# Runtime snapshot cache (regenerated on NAS)
+lab-website/snapshots/
+
 
