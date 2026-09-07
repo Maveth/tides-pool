@@ -63,15 +63,16 @@ async function refreshSnapFreshness(health) {
   const ageSec = Number.isFinite(t) ? (Date.now() - t) / 1000 : null;
   const ageTxt = ageSec != null ? fmtSnapAge(ageSec) : "unknown age";
   const tip =
-    "Most dash numbers come from a periodic snapshot (~5 min). " +
-    "New pool finds / recent blocks, find stats, coinbaser, and gateway-class badges are live. " +
-    "How-to / connect text is always current. " +
-    `Last full snap: ${asOf}`;
-  const short = `snap ${ageTxt} · finds live`;
+    "Top cards, blocks, coinbaser, gateway-class: live. " +
+    "Contributors / charts / miner pages: snapshot (~5 min, or right after a new pool find). " +
+    "How-to / connect: always current. " +
+    `Last contrib snap: ${asOf}`;
+  const short = `snap ${ageTxt} · cards live`;
   if (header) {
     header.hidden = false;
     header.textContent = short;
     header.title = tip;
+    header.setAttribute("data-asof", asOf);
   }
   if (inline) {
     inline.innerHTML = ` · <span title="${tip.replace(/"/g, "&quot;")}">${short}</span>`;
@@ -2503,53 +2504,13 @@ async function loadPool() {
   // Live block list may be ahead of snapshotted chart — pin find markers on the graph.
   mergeLiveFindsIntoPoolChart(blocks);
   const findH = Number(stats.last_pool_block_height || 0);
-  if (findH > 0) {
-    if (watchedFindHeight == null) watchedFindHeight = findH;
-    else if (findH > watchedFindHeight) {
-      watchedFindHeight = findH;
-      const b =
-        (blocks || []).find((x) => Number(x.height) === findH) ||
-        (blocks && blocks[0]) ||
-        null;
-      showFindToast(b, stats);
-    }
-  }
+  if (findH > 0 && watchedFindHeight == null) watchedFindHeight = findH;
 }
 
-/** Last pool-find height we've shown; used by the live find watcher. */
+/** Last pool-find height the watcher has reacted to. */
 let watchedFindHeight = null;
+let findSnapRefreshBusy = false;
 const FIND_WATCH_MS = 15000;
-
-function hideFindToast() {
-  const el = document.getElementById("findToast");
-  if (el) el.hidden = true;
-}
-
-function showFindToast(block, stats) {
-  const el = document.getElementById("findToast");
-  const msg = document.getElementById("findToastMsg");
-  if (!el || !msg) return;
-  const h = Number((block && block.height) || stats.last_pool_block_height || 0);
-  const nick = (block && (block.finder_nickname || "").trim()) || "";
-  const worker = (block && (block.finder_worker || "").trim()) || "";
-  const status = (block && block.status) || "pending";
-  const who = nick
-    ? escapeHtml(nick) + (worker ? ` · <span class="mono">${escapeHtml(worker)}</span>` : "")
-    : worker
-      ? `<span class="mono">${escapeHtml(worker)}</span>`
-      : "finder pending";
-  const href = block ? mempoolBlockHref(block, tidesInfo) : null;
-  const hCell = href
-    ? `<a href="${href}" target="_blank" rel="noopener" class="mono">#${h}</a>`
-    : `<span class="mono">#${h}</span>`;
-  msg.innerHTML = `${hCell} · ${who} · <span class="badge badge-${
-    status === "confirmed" ? "ok" : status === "pending" ? "pending" : "ok"
-  }">${escapeHtml(status)}</span> · blocks table + chart updated`;
-  el.hidden = false;
-  // Auto-hide after a couple minutes (user can dismiss sooner).
-  clearTimeout(showFindToast._t);
-  showFindToast._t = setTimeout(hideFindToast, 120000);
-}
 
 /** Inject live /api/blocks finds onto the pool chart (snap chart may lag). */
 function mergeLiveFindsIntoPoolChart(apiBlocks) {
@@ -2585,6 +2546,53 @@ function mergeLiveFindsIntoPoolChart(apiBlocks) {
   if (added) poolChartObj.update("none");
 }
 
+async function requestSnapRefresh() {
+  try {
+    await fetch("/api/snap/refresh", { method: "POST", cache: "no-store" });
+  } catch (e) {
+    console.error("snap refresh", e);
+  }
+}
+
+/** After a find: live cards/blocks now; keep reloading until contrib snap catches up. */
+async function refreshAfterNewFind() {
+  if (findSnapRefreshBusy) return;
+  findSnapRefreshBusy = true;
+  try {
+    await requestSnapRefresh();
+    const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
+    const addr = qs("a");
+    const beforeAsOf = (() => {
+      try {
+        return document.getElementById("snapFreshness")?.getAttribute("data-asof") || "";
+      } catch (_) {
+        return "";
+      }
+    })();
+    for (let i = 0; i < 12; i++) {
+      if (path === "/blocks") await loadBlocksPage();
+      else if (!addr) await loadPool();
+      else await loadUser(addr);
+      // Snap rebuild usually finishes in ~2–4 min; poll often early for contrib/this-block.
+      await new Promise((r) => setTimeout(r, i < 4 ? 8000 : 15000));
+      try {
+        const meta = await jget("/api/meta");
+        const asOf = (meta && meta.as_of) || "";
+        if (asOf && asOf !== beforeAsOf) {
+          if (path === "/blocks") await loadBlocksPage();
+          else if (!addr) await loadPool();
+          else await loadUser(addr);
+          break;
+        }
+      } catch (_) {
+        /* keep trying */
+      }
+    }
+  } finally {
+    findSnapRefreshBusy = false;
+  }
+}
+
 async function pollForNewFinds() {
   if (document.visibilityState === "hidden") return;
   try {
@@ -2597,22 +2605,8 @@ async function pollForNewFinds() {
     }
     if (h <= watchedFindHeight) return;
     watchedFindHeight = h;
-    const blocks = await jget("/api/blocks?limit=8");
-    const b =
-      (blocks || []).find((x) => Number(x.height) === h) ||
-      (blocks && blocks[0]) ||
-      null;
-    showFindToast(b, stats);
-    const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
-    const addr = qs("a");
-    if (path === "/blocks") {
-      await loadBlocksPage();
-    } else if (!addr) {
-      await loadPool();
-    } else {
-      // Miner page open — still refresh chart markers if pool chart exists
-      mergeLiveFindsIntoPoolChart(blocks || []);
-    }
+    // No banner — kick snap rebuild + refresh cards/blocks/contrib/chart.
+    refreshAfterNewFind().catch((e) => console.error("find refresh", e));
   } catch (e) {
     console.error("find watch", e);
   }
@@ -2962,9 +2956,6 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
 
   refreshHealthStrip().catch((e) => console.error("health", e));
 
-  const dismiss = document.getElementById("findToastDismiss");
-  if (dismiss) dismiss.addEventListener("click", hideFindToast);
-
   // Soft 60s refresh for the active dashboard view (paused when tab hidden).
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
@@ -2979,11 +2970,10 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
     }
   }, 60000);
 
-  // Live find watcher — poll stats often; on new height, toast + refresh blocks/chart.
+  // Watch for new pool finds → trigger snapshot rebuild + reload (cards/blocks already live).
   setInterval(() => {
     pollForNewFinds().catch((e) => console.error("find watch", e));
   }, FIND_WATCH_MS);
-  // First poll soon after load (seed watchedFindHeight without toasting).
   setTimeout(() => {
     pollForNewFinds().catch((e) => console.error("find watch", e));
   }, 3000);
