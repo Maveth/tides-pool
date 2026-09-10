@@ -132,6 +132,102 @@ def diff_payments(
     return result
 
 
+def classify_intended_vs_chain(
+    listed: Mapping[str, int] | Iterable[Any],
+    chain: Mapping[str, int] | Iterable[Any],
+    *,
+    dust_ignore: int = 1000,
+    total_dust: int = 0,  # kept for call-site compat; unused
+) -> tuple[str, PaymentDiff]:
+    """Return (kind, diff) where kind is ``ok`` | ``mismatch``.
+
+    - ok: every address within dust_ignore (same-user lag only)
+    - mismatch: anything else — including cross-user reshuffle, LISTED_ONLY,
+      CHAIN_ONLY, or total mismatch. Confirm may auto-resolve same-payee
+      value drift via recent coinbaser-cache snaps / on-chain refresh;
+      LISTED_ONLY stays needs_review + ops top-up.
+
+    Cross-user value move is CRITICAL even when totals match (e.g. #968456:
+    15 miners omitted on-chain, ~0.0665 BTC folded into ops).
+    """
+    del total_dust  # API compat
+    L = (
+        dict(listed)
+        if isinstance(listed, Mapping)
+        else normalize_payment_map(listed)  # type: ignore[arg-type]
+    )
+    C = (
+        dict(chain)
+        if isinstance(chain, Mapping)
+        else normalize_payment_map(chain)  # type: ignore[arg-type]
+    )
+    d = diff_payments(L, C, dust_ignore=dust_ignore)
+    if d.ok:
+        return "ok", d
+    return "mismatch", d
+
+
+def is_same_payee_value_drift(
+    diff: PaymentDiff,
+    *,
+    max_chain_only_sats: int = 150_000,
+    max_listed_only_sats: int = 150_000,
+) -> bool:
+    """True when payee sets match (modulo tiny crumbs) and amounts differ.
+
+    Classic late-share / coinbaser-cache race (#968420, #968646, #968827, #969431, #970411):
+    same miners on chain vs intended, values drifted — not a material LISTED_ONLY truncate.
+
+    Allow small CHAIN_ONLY outs (dust floors / fee crumbs / late tiny payee) and small
+    LISTED_ONLY crumbs (dust-floor fold into ops on the winning template) so confirm can
+    auto-refresh intended from chain instead of needs_review. Material unpaid miners
+    (large LISTED_ONLY) still disqualify.
+    """
+    listed_extra = int(sum(int(v) for v in (diff.listed_only or {}).values()))
+    if listed_extra > int(max_listed_only_sats):
+        return False
+    chain_extra = int(sum(int(v) for v in (diff.chain_only or {}).values()))
+    if chain_extra > int(max_chain_only_sats):
+        return False
+    return bool(diff.amount_mismatch) or chain_extra > 0 or listed_extra > 0
+
+
+def rescale_payment_map(
+    amounts: Mapping[str, int],
+    target_total: int,
+    *,
+    dust_addr: str | None = None,
+) -> dict[str, int]:
+    """Proportionally rescale address→sats to ``target_total`` (floor + dust)."""
+    src = {a: int(v) for a, v in amounts.items() if int(v) > 0}
+    target = int(target_total or 0)
+    if target <= 0 or not src:
+        return dict(src)
+    total = sum(src.values())
+    if total <= 0:
+        return dict(src)
+    if total == target:
+        return dict(src)
+    out: dict[str, int] = {}
+    assigned = 0
+    # Stable order: largest first so dust lands predictably
+    items = sorted(src.items(), key=lambda kv: (-kv[1], kv[0]))
+    for i, (a, v) in enumerate(items):
+        if i == len(items) - 1:
+            # last gets remainder to preserve total (prefer dust_addr if set)
+            continue
+        sats = (target * v) // total
+        if sats > 0:
+            out[a] = sats
+            assigned += sats
+    last_a, _last_v = items[-1]
+    rem = target - assigned
+    sink = dust_addr if dust_addr and dust_addr in src else last_a
+    if rem > 0:
+        out[sink] = out.get(sink, 0) + rem
+    return {a: s for a, s in out.items() if s > 0}
+
+
 def assert_payments_match(
     listed: Mapping[str, int] | Iterable[Any],
     chain: Mapping[str, int] | Iterable[Any],

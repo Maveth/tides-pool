@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260905bonus3" />
+  <link rel="stylesheet" href="/static/style.css?v=20260909finderStar1" />
 </head>
 <body>
   <header class="top">
     <div class="brand">
       <a href="/">RIPTIDE</a>
-      <span class="tag">mainnet · Blake2b · DATUM-only</span>
+      <span class="tag">mainnet · Blake2b · DATUM preferred</span>
     </div>
     <a id="healthStrip" class="health-strip health-unknown" href="/health" title="Pool / Prime health">…</a>
     <form id="lookup" class="lookup" action="/address" method="get">
@@ -22,43 +22,31 @@
   <main>
     <section id="poolView">
       <div class="promo-stack">
-        <div class="fee-promo" title="Pool fee is currently zero" role="status">
-          <span class="fee-promo-main">Currently <strong>0% fees</strong></span>
-          <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
-        </div>
-        <div
-          class="bonus-promo"
-          title="Limited-time off-chain bonus paid to the miner who finds the pool block (~4% / ~0.125 BTC). 8 bonuses total while fees are 0%."
+                <div
+          class="fee-promo"
+          title="DATUM / own Gateway: 0% coinbaser fee. Pool SV1 stratum: variable work fee (currently 2%); half of that skim goes to live miners as STRATUM FEE."
           role="status"
         >
-          <span class="bonus-promo-main">Limited-time <strong>block-finder</strong> bonus · <strong>~0.125 BTC</strong></span>
-          <span class="bonus-promo-aside">paid to whoever finds the pool block · manually by ops</span>
-          <div class="bonus-spots" aria-label="2 of 8 finder bonuses claimed">
-            <span class="bonus-spot claimed" title="Claimed"></span>
-            <span class="bonus-spot claimed" title="Claimed"></span>
-            <span class="bonus-spot" title="Open"></span>
-            <span class="bonus-spot" title="Open"></span>
-            <span class="bonus-spot" title="Open"></span>
-            <span class="bonus-spot" title="Open"></span>
-            <span class="bonus-spot" title="Open"></span>
-            <span class="bonus-spot" title="Open"></span>
-            <span class="bonus-spots-label"><strong>2</strong> / 8 claimed</span>
-          </div>
+          <span class="fee-promo-main"
+            ><strong>0%</strong> for DATUM · SV1 work fee
+            <strong>variable (currently 2%)</strong>, half to miners</span
+          >
+          <span class="fee-promo-aside">(until my wife threatens to kick me out)</span>
         </div>
-      </div>
+</div>
       <h1>RIPTIDE dashboard</h1>
       <p class="muted">Payouts use <strong>share difficulty</strong> (Ocean TIDES), not equal vote-per-share.</p>
 
       <details class="connect-panel connect-panel-top" id="connectPanel">
         <summary>
           <span class="connect-title">How to connect</span>
-          <span class="connect-hint muted">Official Blake DATUM (Leo), experimental CONVOY, checklist</span>
+          <span class="connect-hint muted">Preferred: CONVOY + PR #10 source · Leo StartOS / Umbrel packages · checklist</span>
         </summary>
         <div class="connect-body">
           <div class="alert box" id="reopenNote" role="status">
             <strong>Coinbaser enforcement is on.</strong>
             Multi-out windows reject type-0 / <code>coinbase_id=0</code> shares (reject 27 — no credit).
-            Use a <strong>pool-compatible Blake2b DATUM</strong> (Leo <code>pow_0.4.1_18+</code>, experimental MaVeTh, or experimental CONVOY below).
+            Prefer <strong>CONVOY + largest-coinbase (PR&nbsp;#10)</strong> from source below so the full TIDES split is not truncated.
           </div>
 
           <div class="join box" id="joinBox">
@@ -68,28 +56,70 @@
             <p class="muted">Paste the Prime <code>pool_pubkey</code> (128 hex) into DATUM if your build does not auto-fetch it.</p>
           </div>
 
-          <div class="warn box" id="joinDatumWarn">
-            <strong>Official packages (Leo / Retropex) — preferred:</strong>
+                    <div class="warn box" id="joinDatumWarn">
+            <p class="muted" style="margin-top:0">
+              <strong>This pool’s Prime dual-speaks configure:</strong>
+              CONVOY UAs get <strong>v3 + ABW disabled</strong>; classic Leo Blake packages stay on <strong>v1</strong> (unchanged).
+            </p>
+            <strong>Preferred DATUM Gateway — CONVOY + PR&nbsp;#10 (YUGE):</strong>
             <ul class="connect-stores">
-              <li><strong>StartOS:</strong> registry
-                <a href="https://start9.mempool.guide/" target="_blank" rel="noopener">start9.mempool.guide</a>
-                · or sideload
-                <a href="https://github.com/Retropex/datum-gateway-startos/releases/tag/pow_0.4.1_18" target="_blank" rel="noopener"><code>pow_0.4.1_18</code></a>
-                (pool-compat fix; <strong>not</strong> <code>_17</code>).</li>
-              <li><strong>Umbrel:</strong> community store
-                <a href="https://github.com/Retropex/Bitcoin-store" target="_blank" rel="noopener">github.com/Retropex/Bitcoin-store</a>
-                → <strong>DATUM (blake2b)</strong> (current store build).</li>
+              <li>
+                <strong>Prefer source (now):</strong>
+                <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10</a>
+                — CONVOY +
+                <a href="https://github.com/CONVOYMining/datum_gateway/pull/10" target="_blank" rel="noopener">PR&nbsp;#10</a>
+                <em>“Serve every miner the largest coinbase class on BLAKE2b work”</em>.
+                Without that patch, older builds can use a <strong>small class (~17 outs / “type&nbsp;2”)</strong> and
+                <strong>truncate</strong> the pool split (remainder → ops). Empty jobs (<code>coinbase_id=0</code>) are reject&nbsp;27.
+              </li>
+              <li>
+                <strong>Prefer Luke / CONVOY upstream source (when PR&nbsp;#10 is merged):</strong>
+                build
+                <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
+                <code>master</code> (Luke lineage) directly — <strong>not</strong> the MaVeTh fork. Drop the fork when you no longer need it.
+              </li>
             </ul>
-            <strong>Experimental (working, MaVeTh):</strong>
-            <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_20" target="_blank" rel="noopener">StartOS <code>pow_0.4.1_20</code></a>
-            (Fly tip multi-out) — sideload if you need the older known-good package.
-            Pre-<code>_18</code> Leo / type-0-only Gateways still get reject 27 here.
+            <br />
+            <strong>Packaged DATUM (Leo / Retropex) — CONVOY + PR&nbsp;#10, githash <code>7491a509…</code>:</strong>
+            <ul class="connect-stores">
+              <li>
+                <strong>StartOS (sideload):</strong>
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/download/pow_0.4.1_23/datum.s9pk" target="_blank" rel="noopener"><strong>datum.s9pk</strong></a>
+                —
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/tag/pow_0.4.1_23" target="_blank" rel="noopener"><code>pow_0.4.1_23</code></a>
+                (universal; “Add PR10 code for more payout outputs”)
+              </li>
+              <li>
+                <strong>Umbrel (community store):</strong>
+                add
+                <a href="https://github.com/Retropex/Bitcoin-store" target="_blank" rel="noopener">github.com/Retropex/Bitcoin-store</a>
+                then install <strong>DATUM (blake2b)</strong>
+                (<code>btc-datum</code> · <code>v0.4.1-beta-6</code>+ · “Switch to convoy repo with PR10”).
+                Stratum port on that app is typically <code>23339</code> (check Config).
+              </li>
+            </ul>
+            Prefer <strong>source</strong>
+            (<a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">MaVeTh <code>convoy-pr10</code></a>
+            now; Luke/CONVOY upstream when PR&nbsp;#10 merges) when you can;
+            Leo’s StartOS / Umbrel packages are the one-click path with the same PR&nbsp;#10 Gateway
+            (UA will show <code>7491a5099dd5d887a027c812f71de63e0d5986a3</code>).
             <br /><br />
-            <strong>Experimental support for CONVOY DATUM (ABW-disable mode):</strong>
-            <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
-            tip (~<code>b9ea7dc</code>+). This pool’s Prime dual-speaks configure:
-            CONVOY UAs get <strong>v3 + ABW disabled</strong>; Leo / MaVeTh / other packages stay on classic <strong>v1</strong> (unchanged).
-            Still experimental — prefer Leo <code>_18+</code> for production miners; watch for type-0 / empty-tip coinbase behavior on Blake.
+            <strong>Other packages:</strong>
+            older builds may work but can truncate the split. Prefer MaVeTh source or Leo
+            <code>pow_0.4.1_23</code> / Umbrel store above — not the MaVeTh <code>.s9pk</code> sideloads.
+          </div>
+
+<div class="warn box" id="joinCbTypeWarn">
+            <strong>Contributor icons ✓ / ⚠ / ?</strong> (next to addresses):
+            recent multi-out share health for <em>your</em> Gateway’s coinbase class.
+            <ul class="connect-stores">
+              <li><strong>✓</strong> — recent accepts look like a large split (type-2 share of multi-out below threshold). Sticky until a bad window.</li>
+              <li><strong>⚠</strong> — recent accepts are heavy on small/truncate-class jobs (often CONVOY without
+                <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">PR&nbsp;#10 / YUGE</a>).
+                Sticky until a later check sees a clean window. Not the same as quarantine.</li>
+              <li><strong>?</strong> — not enough recent multi-out accepts to classify yet.</li>
+            </ul>
+            Hover the icon for this miner’s %. Empty-job rejects (<code>coinbase_id=0</code>) do not drive this badge.
           </div>
 
           <div class="warn box" id="joinFullPassWarn">
@@ -119,12 +149,28 @@
             <h3>Checklist</h3>
             <ul>
               <li><strong>Knots:</strong> mainnet · Blake2b · synced · RPC for DATUM.</li>
-              <li><strong>DATUM:</strong> Leo <code>pow_0.4.1_18+</code> (or experimental MaVeTh <code>_20</code>) — see above.</li>
+              <li><strong>DATUM (preferred):</strong> source
+                <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">Maveth/datum_gateway-convoy @ convoy-pr10</a>
+                · or Leo packages
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/tag/pow_0.4.1_23" target="_blank" rel="noopener">StartOS <code>pow_0.4.1_23</code></a>
+                /
+                <a href="https://github.com/Retropex/Bitcoin-store" target="_blank" rel="noopener">Umbrel Bitcoin-store</a>
+                (githash <code>7491a509…</code>). When
+                <a href="https://github.com/CONVOYMining/datum_gateway/pull/10" target="_blank" rel="noopener">PR&nbsp;#10</a>
+                merges, prefer Luke/CONVOY upstream
+                <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
+                <code>master</code> instead of the fork.</li>
               <li><strong>DATUM → pool:</strong> <code>pool_host=tides.maveth.ca</code> <code>pool_port=28916</code> (LAN: NAS IP).</li>
               <li><strong>Payout:</strong> <code>mining.pool_address</code> = your <code>bc1…</code> / <code>1…</code>.</li>
               <li><strong>Usernames:</strong> <strong>Pool Pass Full Users = OFF</strong> · miners = worker name only (e.g. <code>rig1</code>).</li>
-              <li><strong>Tag:</strong> <code>coinbase_tag_secondary</code> = your name; primary is <code>TIDES</code>.</li>
+              <li><strong>Tag:</strong> <code>coinbase_tag_secondary</code> = your name; primary is <code>RIPTIDE</code> (pool-set).</li>
               <li><strong>Miners:</strong> point ASICs at <em>your</em> Gateway stratum — never port <code>28916</code>.</li>
+                            <li><strong>Pool SV1 (not recommended):</strong>
+                <code>stratum+tcp://tides.maveth.ca:23337</code>
+                · username = your payout <code>bc1…</code>[.<code>worker</code>]
+                · no your-own Knots/DATUM
+                · <strong>variable work fee (currently 2%)</strong>; half of that skim credited to live miners (<code>STRATUM FEE</code>), half to ops.
+                Prefer DATUM above.</li>
               <li><strong>Fallback:</strong> keep solo / another pool configured.</li>
             </ul>
           </div>
@@ -149,7 +195,7 @@
 
       <div class="box dashboard-panel" id="coinbaserBox">
         <h2>If we find a block now</h2>
-        <p class="muted">Same payout split Prime sends Gateways (cached window, live template value). Fee / finder / window details are in the footnote below.</p>
+        <p class="muted">Same payout split Prime sends Gateways (cached window, live template value). Fee / window details are in the footnote below.</p>
         <p class="muted" id="coinbaserNote"></p>
         <div class="coinbaser-pie-wrap">
           <canvas id="coinbaserPie" aria-label="Next-block payout split pie chart"></canvas>
@@ -173,12 +219,13 @@
       <div class="stack-panels">
         <div>
           <h2>Contributors</h2>
-          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <strong>Total work</strong> is this window only — not lifetime.</p>
+          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <strong>Blocks</strong> = % of those block-periods you appeared in — not the same as payout %. <strong>Total work</strong> is this window only — not lifetime.</p>
           <div class="contrib-toolbar muted">
             <div class="activity-legend">
               <span class="activity-legend-item"><span class="activity-dot live" title="Shares in the last ~10 minutes"></span>hashing now</span>
               <span class="activity-legend-item"><span class="activity-dot idle" title="Work on this block, but quiet lately"></span>this block, idle</span>
               <span class="activity-legend-item"><span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span>no work this block</span>
+              <span class="activity-legend-item" title="See How to connect — CONVOY PR #10 / coinbase class"><span class="cb-type-ico cb-type-ok">✓</span>/<span class="cb-type-ico cb-type-warn">⚠</span> Gateway coinbase class</span>
             </div>
             <div class="contrib-sort-bar" id="contribSortBar" hidden>
               <label>Group by
@@ -210,13 +257,14 @@
                   <th title="Last coinbase secondary tag seen when this address found a block">Nickname</th>
                   <th>Shares</th>
                   <th title="Most recent pool find where this address still had shares. CURRENT = hashing this unfinished block. N ago = last shares were N confirmed finds back (less dilution as they age out).">Last share</th>
+                  <th title="Share of window block-periods you have any shares in (e.g. 50% ≈ 4 of 8). Not payout % — payout is still total work ÷ window work.">Blocks</th>
                   <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
                   <th title="Total work in the payout window only (7 confirmed finds + current) — not lifetime">Total work</th>
                   <th>~H/s</th>
                   <th>Payout %</th>
                 </tr>
               </thead>
-              <tbody id="contribBody"><tr><td colspan="10">Loading…</td></tr></tbody>
+              <tbody id="contribBody"><tr><td colspan="11">Loading…</td></tr></tbody>
             </table>
           </div>
           <p class="table-more muted" id="contribMore" hidden></p>
@@ -229,7 +277,7 @@
                 <tr>
                   <th>Height</th>
                   <th>Status</th>
-                  <th title="Stratum worker that submitted the block share">Worker</th>
+                  <th title="★ Machine (stratum worker) that found the block — DATUM or SV1">★ Worker</th>
                   <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
                   <th>Address</th>
                   <th>Reward</th>
@@ -257,7 +305,7 @@
             <tr>
               <th>Height</th>
               <th>Status</th>
-              <th title="Stratum worker that submitted the block share">Worker</th>
+              <th title="★ Machine (stratum worker) that found the block — DATUM or SV1">★ Worker</th>
               <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
               <th>Address</th>
               <th>Reward</th>
@@ -357,6 +405,6 @@
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260905bonus3" defer></script>
+  <script src="/static/app.js?v=20260909finderStar1" defer></script>
 </body>
 </html>

@@ -1049,3 +1049,16 @@ tr.row-ops td {
 .bonus-promo-done .bonus-spots-label {
   font-weight: 600;
 }
+
+/* Contributors accordion in the main stack (open by default). */
+.contrib-panel {
+  margin-top: 0;
+  margin-bottom: 0;
+  align-self: start;
+}
+.contrib-panel > .connect-body {
+  padding-top: 0.75rem;
+}
+.contrib-panel .contrib-section-h:first-of-type {
+  margin-top: 0.5rem;
+}

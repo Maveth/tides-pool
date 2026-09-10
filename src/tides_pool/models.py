@@ -31,6 +31,14 @@ class PoolStats(BaseModel):
     orphans_last_24h: int = 0
     blocks_last_7d: int = 0
     orphans_last_7d: int = 0
+    blocks_all_time: int = 0  # confirmed + pending only (orphans excluded)
+    orphans_all_time: int = 0
+    # Period luck% = 100 * Σ(network_diff of finds in period) / pool share-work
+    # in the same period. Uses each find's stored difficulty (handles retargets).
+    # 100 = expected; >100 = lucky. None when no share work in period.
+    luck_24h_pct: float | None = None
+    luck_7d_pct: float | None = None
+    luck_all_pct: float | None = None
     chain_height: int | None = None
     block_difficulty: int = 1
     reward_estimate_sats: int = 0
@@ -87,6 +95,7 @@ class WorkerBreak(BaseModel):
     share_pct: float = 0.0  # of this address's window work
     hashrate_hs: float = 0.0
     sats: int | None = None  # proportional coinbaser sats when known
+    connection_type: str | None = None  # 'sv1' | 'datum' | None
 
 
 class UserStats(BaseModel):
@@ -95,7 +104,7 @@ class UserStats(BaseModel):
     share_pct: float = 0.0
     estimated_next_sats: int = 0
     pending_finder_credit_sats: int = 0
-    # Lifetime coinbase reconstruction (TIDES share lines + paid finder bonuses).
+    # Lifetime paid settlements (coinbase / sendmany ledger) — not share replay.
     total_earned_sats: int = 0
     # Open finder bonus(es) not yet paid in a coinbase (excludes est. next tides share).
     unpaid_pending_sats: int = 0
@@ -110,6 +119,11 @@ class UserStats(BaseModel):
     last_find_height: int | None = None
     last_find_at: datetime | None = None
     last_find_age_sec: int | None = None
+    # Payout-window vesting (same as contributors "% Blocks w Shares").
+    # e.g. eras_with_work=4, window_eras=8 → active in 4 of 8 block-periods.
+    window_eras: int = 0
+    eras_with_work: int = 0
+    eras_with_work_pct: float = 0.0
 
 
 class ShareOut(BaseModel):
@@ -122,15 +136,20 @@ class ShareOut(BaseModel):
 
 
 class UserPayoutOut(BaseModel):
-    """One reconstructed coinbase credit for a miner address."""
+    """One settlement credit for a miner address (coinbase / sendmany / pending owed)."""
 
     height: int
     block_hash: str | None = None
-    kind: str  # "tides" | "finder"
+    kind: str  # "tides" | "finder" | "ops" | "bonus" | ...
     sats: int
-    status: str  # "confirmed" | "pending" | "unpaid"
+    status: str  # "confirmed" | "pending" | "unpaid" | orphaned…
     accounted_at: datetime | None = None
     paid_in_height: int | None = None
+    # Same block payout bookkeeping as /api/blocks (miner page status column).
+    payout_mode: str | None = None  # onchain_split | ops_manual | needs_review
+    manual_payout_done: bool = False
+    manual_payout_note: str | None = None
+    manual_adjustment: dict | None = None
 
 
 class Contributor(BaseModel):
@@ -149,11 +168,23 @@ class Contributor(BaseModel):
     quarantined: bool = False
     quarantine_reason: str | None = None
     nickname: str | None = None  # last coinbase secondary tag seen for this address
+    # Distinct window block-periods with any shares (CURRENT + completed finds in window).
+    # e.g. 4/8 → eras_with_work_pct=50. Not the same as payout % (work-weighted).
+    window_eras: int = 0
+    eras_with_work: int = 0
+    eras_with_work_pct: float = 0.0
     # Finder luck in the payout window: 100 * finds_by_addr * net_diff / work.
     # None when no finds by this address in-window (or no work).
     luck_pct: float | None = None
     luck_finds: int = 0
     workers: list[WorkerBreak] = Field(default_factory=list)
+    # Window work split by connection path (for dual SV1+DATUM same address).
+    sv1_work: int = 0
+    datum_work: int = 0
+    # Coinbase size-class health from accepted shares (hourly job → meta cb_type_status_v1).
+    # ok = sticky type4+ until a type-2 share; warn = type-2 seen (truncate risk); unknown = no data.
+    cb_type_status: str | None = None  # "ok" | "warn" | "unknown"
+    cb_type_tip: str | None = None
 
 
 class BlockOut(BaseModel):
@@ -168,10 +199,12 @@ class BlockOut(BaseModel):
     status: str = "confirmed"
     orphan_reason: str | None = None
     share_head_seq: int | None = None
-    # onchain_split | ops_manual (ops-only coinbase; ops pays miners off-chain)
+    # onchain_split | ops_manual (ops-only) | needs_review (real intended≠chain)
     payout_mode: str = "onchain_split"
     manual_payout_done: bool = False
     manual_payout_note: str | None = None
+    # Ops LISTED_ONLY / cross-user top-up table (hover on "manual adjustment")
+    manual_adjustment: dict | list | None = None
     intended_payout: list | dict | None = None  # parsed snapshot for UI/ops
 
 

@@ -1,14 +1,10 @@
-# Optional dual-process layout: website restarts do not bounce DATUM Prime.
+# Live dual-process: tides-web (:8088) + tides-prime (:28916)
+# UI restart must not bounce DATUM Gateways.
 #
-# Usage (alongside / instead of single tides-pool service):
-#   docker compose -f docker-compose.yml -f docker-compose.split.yml up -d
+# From /mnt/Alexandria/local/tides-pool/deploy:
+#   docker compose -f docker-compose.yml -f docker-compose.split.yml up -d --build
 #
-# Ports (host):
-#   UI/API  :8088  → tides-web
-#   Prime   :28916 → tides-prime
-#   Prime health (optional): :8089 → tides-prime :8080
-#
-# Default single-process `tides-pool` service is disabled here.
+# Old all-in-one `tides-pool` is profile-gated off.
 
 services:
   tides-pool:
@@ -18,32 +14,48 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    image: deploy-tides-pool
     command: ["tides-pool", "serve-prime", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       TIDES_ROLE: prime
-      TIDES_DATABASE_URL: postgresql://tides:${POSTGRES_PASSWORD:-tides}@postgres:5432/tides
+      TIDES_DATABASE_URL: postgresql://tides:tides@postgres:5432/tides
       TIDES_HOST: 0.0.0.0
       TIDES_PORT: 8080
-      TIDES_NETWORK: ${TIDES_NETWORK:-main}
-      TIDES_FEE_BPS: "500"
+      TIDES_NETWORK: main
+      TIDES_FEE_BPS: "0"
       TIDES_FINDER_FEE_SHARE_BPS: "8000"
       TIDES_WINDOW_BLOCKS: "8"
-      TIDES_POOL_OPS_ADDRESS: ${TIDES_POOL_OPS_ADDRESS:?set fee/ops address}
-      TIDES_COINBASE_TAG_PRIMARY: TIDES
-      TIDES_COINBASE_TAG_SECONDARY: ${TIDES_COINBASE_TAG_SECONDARY:-Maveth_tides}
-      TIDES_BITCOIN_RPC_URL: ${TIDES_BITCOIN_RPC_URL:?set knots rpc url}
-      TIDES_BITCOIN_RPC_USER: ${TIDES_BITCOIN_RPC_USER:-datum}
-      TIDES_BITCOIN_RPC_PASSWORD: ${TIDES_BITCOIN_RPC_PASSWORD:?set rpc password}
+      TIDES_POOL_OPS_ADDRESS: "bc1q3l0q76kahen6m3n4d7adksq4mxmvutyndqd5f9"
+      TIDES_COINBASE_TAG_PRIMARY: RIPTIDE
+      TIDES_COINBASE_TAG_LEGACY: TIDES
+      TIDES_COINBASE_TAG_SECONDARY: Maveth_tides
+      TIDES_BITCOIN_RPC_URL: "http://192.168.0.143:8332"
+      TIDES_BITCOIN_RPC_USER: datum
+      TIDES_BITCOIN_RPC_PASSWORD: "YOUR_LAB_PASSWORD"
       TIDES_CHAIN_SYNC_SECONDS: "15"
       TIDES_DATUM_PRIME_PORT: "28916"
       TIDES_MIN_SHARE_DIFFICULTY: "2048"
+      TIDES_GPU_BASELINE_HASHRATE_HS: "2500000000"
+      TIDES_ADDRESS_WORK_CAP_MULTIPLIER: "0"
+      TIDES_ADDRESS_WORK_CAP_WINDOW_SEC: "3600"
       TIDES_POOL_KEYS_PATH: "/app/data/pool_keys.json"
-      TIDES_MEMPOOL_EXPLORER_URL: ${TIDES_MEMPOOL_EXPLORER_URL:-https://mempool.maveth.ca}
+      TIDES_MEMPOOL_EXPLORER_URL: "https://mempool.kilombino.com"
+      TIDES_CONFIGURE_V3_UA_SUBSTR: "b9ea7dc,convoy,3e252be"
       TIDES_BLOCK_CONFIRMATIONS: "2"
+      TIDES_ABW_ENABLE: "0"
+      TIDES_ABW_PRIME_PORT: "28926"
+      TIDES_ABW_ROTATE_SECONDS: "120"
+      TIDES_QUARANTINE_REHAB_SHARES: "2"
+      TIDES_QUARANTINE_REJECT27_WINDOW: "40"
+      TIDES_QUARANTINE_REJECT27_RATIO: "0.65"
+      TIDES_QUARANTINE_REJECT27_MIN_SAMPLES: "15"
+      TIDES_QUARANTINE_CHECK_EVERY_N: "25"
+      TIDES_COINBASER_CACHE_SECONDS: "45"
     volumes:
-      - ./data:/app/data:rw
+      - ./datum-pool:/app/data:rw
     ports:
       - "28916:28916"
+      - "28926:28926"
       - "8089:8080"
     depends_on:
       postgres:
@@ -51,33 +63,35 @@ services:
     restart: unless-stopped
 
   tides-web:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    image: deploy-tides-pool
     command: ["tides-pool", "serve-web", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       TIDES_ROLE: web
       TIDES_PRIME_HOST: tides-prime
-      TIDES_DATABASE_URL: postgresql://tides:${POSTGRES_PASSWORD:-tides}@postgres:5432/tides
+      TIDES_DATABASE_URL: postgresql://tides:tides@postgres:5432/tides
       TIDES_HOST: 0.0.0.0
       TIDES_PORT: 8080
-      TIDES_NETWORK: ${TIDES_NETWORK:-main}
-      TIDES_FEE_BPS: "500"
+      TIDES_NETWORK: main
+      TIDES_FEE_BPS: "0"
       TIDES_FINDER_FEE_SHARE_BPS: "8000"
       TIDES_WINDOW_BLOCKS: "8"
-      TIDES_POOL_OPS_ADDRESS: ${TIDES_POOL_OPS_ADDRESS:?set fee/ops address}
-      TIDES_COINBASE_TAG_PRIMARY: TIDES
-      TIDES_COINBASE_TAG_SECONDARY: ${TIDES_COINBASE_TAG_SECONDARY:-Maveth_tides}
-      TIDES_BITCOIN_RPC_URL: ${TIDES_BITCOIN_RPC_URL:?set knots rpc url}
-      TIDES_BITCOIN_RPC_USER: ${TIDES_BITCOIN_RPC_USER:-datum}
-      TIDES_BITCOIN_RPC_PASSWORD: ${TIDES_BITCOIN_RPC_PASSWORD:?set rpc password}
+      TIDES_POOL_OPS_ADDRESS: "bc1q3l0q76kahen6m3n4d7adksq4mxmvutyndqd5f9"
+      TIDES_COINBASE_TAG_PRIMARY: RIPTIDE
+      TIDES_COINBASE_TAG_LEGACY: TIDES
+      TIDES_COINBASE_TAG_SECONDARY: Maveth_tides
+      TIDES_BITCOIN_RPC_URL: "http://192.168.0.143:8332"
+      TIDES_BITCOIN_RPC_USER: datum
+      TIDES_BITCOIN_RPC_PASSWORD: "YOUR_LAB_PASSWORD"
       TIDES_DATUM_PRIME_PORT: "28916"
+      TIDES_MIN_SHARE_DIFFICULTY: "2048"
       TIDES_POOL_KEYS_PATH: "/app/data/pool_keys.json"
-      TIDES_MEMPOOL_EXPLORER_URL: ${TIDES_MEMPOOL_EXPLORER_URL:-https://mempool.maveth.ca}
+      TIDES_MEMPOOL_EXPLORER_URL: "https://mempool.kilombino.com"
+      TIDES_CONFIGURE_V3_UA_SUBSTR: "b9ea7dc,convoy,3e252be"
+      TIDES_BLOCK_CONFIRMATIONS: "2"
     volumes:
-      - ./data:/app/data:ro
+      - ./datum-pool:/app/data:ro
     ports:
-      - "8088:8080"
+      - "8087:8080"
     depends_on:
       postgres:
         condition: service_healthy

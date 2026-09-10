@@ -193,3 +193,29 @@ def test_last_and_current_together_regression():
     drifted[BOB] = drifted.get(BOB, 0) + 12345
     with pytest.raises(AssertionError, match="current_block"):
         assert_payments_match(drifted, current_listed, context="current_block")
+
+
+
+def test_same_payee_value_drift_allows_tiny_listed_and_chain_only():
+    from tides_pool.payment_verify import PaymentDiff, is_same_payee_value_drift
+
+    # Classic same-payee amount reshuffle + dust crumbs (#970411 class).
+    d = PaymentDiff(
+        matched={ALICE: 1_000_000, BOB: 500_000},
+        amount_mismatch={ALICE: (1_000_000, 1_002_000), BOB: (500_000, 498_500)},
+        listed_only={OPS: 2947},  # dust-floor crumb, not a material unpaid miner
+        chain_only={"bc1qcrumbcrumbcrumbcrumbcrumbcru0": 2067},
+    )
+    assert is_same_payee_value_drift(d) is True
+
+
+def test_same_payee_value_drift_rejects_material_listed_only():
+    from tides_pool.payment_verify import PaymentDiff, is_same_payee_value_drift
+
+    d = PaymentDiff(
+        matched={ALICE: 1_000_000},
+        amount_mismatch={},
+        listed_only={BOB: 500_000},  # real unpaid miner
+        chain_only={},
+    )
+    assert is_same_payee_value_drift(d) is False

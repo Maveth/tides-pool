@@ -48,7 +48,8 @@ async def sync_once(store: Store, settings: Settings) -> dict:
         }
 
     data = await asyncio.to_thread(_pull)
-    # Store as meta — do NOT invent pool blocks or shares
+    # Meta only here. Missed TIDES tip adoption lives in reconcile_pool_blocks
+    # (lookback scan) — does not invent shares, only records on-chain finds.
     await store.set_meta("chain_height", str(data["height"]))
     await store.set_meta("block_difficulty", str(int(data["difficulty"])))
     await store.set_meta("reward_estimate", str(int(data["reward_estimate_sats"])))

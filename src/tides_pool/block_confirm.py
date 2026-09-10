@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -10,7 +11,12 @@ from typing import Any
 
 from tides_pool.bitcoin_rpc import BitcoinRPC, BitcoinRPCError
 from tides_pool.config import Settings, miner_reward_bps
-from tides_pool.payment_verify import block_intended_to_map, diff_payments
+from tides_pool.payment_verify import (
+    block_intended_to_map,
+    classify_intended_vs_chain,
+    is_same_payee_value_drift,
+    rescale_payment_map,
+)
 from tides_pool.store import Store
 from tides_pool.tides import coinbase_suggestion, split_reward
 
@@ -121,12 +127,12 @@ def sanitize_nickname(raw: str | None) -> str | None:
 
 
 def extract_secondary_tag(ascii_cb: str, primary: str) -> str | None:
-    """Best-effort secondary coinbase tag (miner nickname) after primary TIDES tag.
+    """Best-effort secondary coinbase tag (miner nickname) after primary pool tag.
 
-    DATUM/TIDES coinbases typically embed primary then secondary as printable ASCII
+    DATUM coinbases typically embed primary then secondary as printable ASCII
     (nul / OP_PUSH length bytes show as '.' in our ascii helper), e.g.
-    ``TIDES.Bitcoin ForkLift``. Do **not** allow ``.`` inside the nickname — that
-    glued ``DonSATS......P.q`` from trailing script bytes.
+    ``RIPTIDE.Bitcoin ForkLift`` (legacy ``TIDES.…``). Do **not** allow ``.``
+    inside the nickname — that glued ``DonSATS......P.q`` from trailing script.
     """
     tag = (primary or "").strip()
     if not tag or not ascii_cb or tag not in ascii_cb:
@@ -146,21 +152,51 @@ def extract_secondary_tag(ascii_cb: str, primary: str) -> str | None:
     return sanitize_nickname(ascii_cb[i:j])
 
 
+def matched_pool_tag(
+    ascii_cb: str,
+    tag_primary: str,
+    tag_legacy: str = "TIDES",
+) -> str | None:
+    """Return which configured primary (or legacy) appears in coinbase ASCII.
+
+    Prefers the current ``tag_primary`` when both are present.
+    """
+    primary = (tag_primary or "").strip()
+    cands: list[str] = []
+    for t in [primary, *str(tag_legacy or "").split(",")]:
+        t = (t or "").strip()
+        if t and t not in cands:
+            cands.append(t)
+    if not ascii_cb or not cands:
+        return None
+    if primary and primary in ascii_cb:
+        return primary
+    for t in cands:
+        if t in ascii_cb:
+            return t
+    return None
+
+
 def classify_pool_coinbase(
     block: dict[str, Any],
     *,
     tag_primary: str,
     ops_address: str,
+    tag_legacy: str = "TIDES",
 ) -> tuple[bool, str, str | None]:
-    """Classify whether an on-chain coinbase is a TIDES pool find.
+    """Classify whether an on-chain coinbase is a pool find.
 
     Returns ``(ok, reason, payout_mode)`` where ``payout_mode`` is:
       - ``onchain_split`` — normal multi-out (miners + ops)
       - ``ops_manual`` — single value out to ops only (Prime/GW fallback);
         keep as pool find; ops pays miners manually
+      - ``needs_review`` is **not** set here — that comes from confirm-time
+        intended↔chain checks when the mismatch is not zero-sum drift
       - ``None`` when ``ok`` is False
 
     Hard gate: a single value out to anyone **other than ops** is not ours.
+    Primary tag may be renamed (e.g. TIDES→RIPTIDE); ``tag_legacy`` keeps
+    historical coinbases attributable.
     """
     tag = (tag_primary or "").strip()
     ops = (ops_address or "").strip()
@@ -169,7 +205,7 @@ def classify_pool_coinbase(
     if not ops:
         return False, "no_ops_configured", None
     ascii_cb = coinbase_ascii(block)
-    if tag not in ascii_cb:
+    if matched_pool_tag(ascii_cb, tag, tag_legacy) is None:
         return False, "missing_tides_tag", None
     addrs = coinbase_payout_addresses(block)
     if not addrs:
@@ -191,14 +227,18 @@ def coinbase_looks_like_ours(
     *,
     tag_primary: str,
     ops_address: str,
+    tag_legacy: str = "TIDES",
 ) -> bool:
     """True if this is our pool block (multi-out split OR ops-only manual).
 
     Finder identity is separate (stratum address/worker on the winning share).
-    Requires TIDES primary tag. Single-out to non-ops is rejected.
+    Requires configured primary (or legacy) tag. Single-out to non-ops rejected.
     """
     ok, _reason, _mode = classify_pool_coinbase(
-        block, tag_primary=tag_primary, ops_address=ops_address
+        block,
+        tag_primary=tag_primary,
+        ops_address=ops_address,
+        tag_legacy=tag_legacy,
     )
     return ok
 
@@ -208,10 +248,14 @@ def verify_pool_block(
     *,
     tag_primary: str,
     ops_address: str,
+    tag_legacy: str = "TIDES",
 ) -> tuple[bool, str]:
     """Return (ok, reason). Used before recording finds / opening credits."""
     ok, reason, _mode = classify_pool_coinbase(
-        block, tag_primary=tag_primary, ops_address=ops_address
+        block,
+        tag_primary=tag_primary,
+        ops_address=ops_address,
+        tag_legacy=tag_legacy,
     )
     return ok, reason
 
@@ -221,10 +265,14 @@ def pool_coinbase_payout_mode(
     *,
     tag_primary: str,
     ops_address: str,
+    tag_legacy: str = "TIDES",
 ) -> str | None:
     """Return payout_mode if block is ours, else None."""
     ok, _reason, mode = classify_pool_coinbase(
-        block, tag_primary=tag_primary, ops_address=ops_address
+        block,
+        tag_primary=tag_primary,
+        ops_address=ops_address,
+        tag_legacy=tag_legacy,
     )
     return mode if ok else None
 
@@ -281,6 +329,47 @@ async def build_intended_payout_snapshot(
     return json.dumps(payload, separators=(",", ":"))
 
 
+def intended_snapshot_from_chain(
+    blk: dict[str, Any],
+    *,
+    height: int,
+    reward_sats: int,
+    share_head_seq: int | None,
+    finder_address: str | None,
+    ops_address: str | None,
+    existing_snap: str | None = None,
+) -> str:
+    """Build intended_payout_json from the mined coinbase (truth at confirm)."""
+    chain = coinbase_payout_map(blk)
+    ops = (ops_address or "").strip()
+    cutoff = None
+    finder_credit = 0
+    if existing_snap:
+        try:
+            prev = json.loads(existing_snap)
+            if isinstance(prev, dict):
+                cutoff = prev.get("cutoff_seq")
+                finder_credit = int(prev.get("finder_credit_sats") or 0)
+        except Exception:  # noqa: BLE001
+            pass
+    outs = []
+    for addr, sats in sorted(chain.items(), key=lambda kv: -kv[1]):
+        kind = "ops" if ops and addr == ops else "tides"
+        outs.append({"address": addr, "sats": int(sats), "kind": kind, "value": int(sats)})
+    payload = {
+        "height": int(height),
+        "reward_sats": int(reward_sats),
+        "cutoff_seq": cutoff,
+        "share_head_seq": share_head_seq,
+        "finder_address": finder_address or "",
+        "finder_credit_sats": int(finder_credit or 0),
+        "source": "onchain_refresh_confirm_drift",
+        "outputs": outs,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
 async def apply_confirm_payout_checks(
     store: Store,
     settings: Settings,
@@ -295,8 +384,11 @@ async def apply_confirm_payout_checks(
 ) -> str:
     """At confirm: refresh reward, ensure snapshot, compare chain vs intended.
 
-    Returns final payout_mode. On intended≠chain (material), fail closed to
-    ``ops_manual`` so the window still advances but UI flags manual payout.
+    Returns final payout_mode:
+      - ``onchain_split`` — intended matches chain within per-address dust
+      - ``needs_review`` — any cross-user / LISTED_ONLY / CHAIN_ONLY / material
+        mismatch (ops must review; unpaid LISTED_ONLY → top up from ops)
+      - ``ops_manual`` — true ops-only coinbase
     """
     actual = coinbase_value_sats(blk)
     if actual and actual != int(reward_fallback or 0):
@@ -309,7 +401,13 @@ async def apply_confirm_payout_checks(
         )
     reward_now = int(actual or reward_fallback or 0)
 
-    nick = extract_secondary_tag(coinbase_ascii(blk), settings.coinbase_tag_primary)
+    _ascii = coinbase_ascii(blk)
+    _legacy = str(getattr(settings, "coinbase_tag_legacy", "TIDES") or "TIDES")
+    _matched = (
+        matched_pool_tag(_ascii, settings.coinbase_tag_primary, _legacy)
+        or settings.coinbase_tag_primary
+    )
+    nick = extract_secondary_tag(_ascii, _matched)
     if nick and finder_address:
         try:
             await store.set_address_nickname(str(finder_address), nick)
@@ -320,6 +418,7 @@ async def apply_confirm_payout_checks(
         blk,
         tag_primary=settings.coinbase_tag_primary,
         ops_address=settings.pool_ops_address,
+        tag_legacy=_legacy,
     ) or "onchain_split"
 
     snap = existing_snap
@@ -336,23 +435,142 @@ async def apply_confirm_payout_checks(
             snap = None
 
     note = existing_note
+    locked_head: int | None = None
     if mode == "ops_manual":
         note = note or "Coinbase was ops-only; ops will pay miners manually"
     elif snap and mode == "onchain_split":
         listed = block_intended_to_map(snap)
         chain = coinbase_payout_map(blk)
-        # Ignore dust-level rounding; flag real payee/amount divergence.
-        d = diff_payments(listed, chain, dust_ignore=1000)
-        if not d.ok:
-            mode = "ops_manual"
-            note = f"coinbase≠intended at confirm: {d.summary()}"
-            log.warning("block %s %s", height, note)
+        kind, d = classify_intended_vs_chain(listed, chain, dust_ignore=1000)
+        # 1) Dust-only / exact → keep onchain_split.
+        # 2) Else try recent coinbaser-cache candidates (snap ring) embedded at
+        #    find — rescale to chain total, dust≤1000 OK; lock share_head.
+        # 3) Soft ring + same-payee dust drift (tiny LISTED_ONLY/CHAIN_ONLY
+        #    crumbs OK, #970411) → refresh intended from chain; lock share_head
+        #    from soft-matched ring candidate when available.
+        # 4) Material LISTED_ONLY / CHAIN_ONLY → needs_review (ops top-up).
+        if kind == "mismatch":
+            resolved = False
+            try:
+                prev = json.loads(snap) if isinstance(snap, str) else {}
+            except Exception:  # noqa: BLE001
+                prev = {}
+            ops = (settings.pool_ops_address or "").strip() or None
+            cands = list(prev.get("recent_candidates") or [])
+            # Also try the primary outputs after rescale (cache_value → chain).
+            cands = [
+                {
+                    "outputs": prev.get("outputs") or [],
+                    "cache_value": prev.get("cache_value"),
+                    "max_seq": prev.get("share_head_seq") or prev.get("max_seq"),
+                }
+            ] + cands
+            target = sum(chain.values())
+            soft_ring_head: int | None = None
+            soft_ring_i: int | None = None
+            for i, cand in enumerate(cands):
+                raw = block_intended_to_map({"outputs": cand.get("outputs") or []})
+                if len(raw) < 2:
+                    continue
+                scaled = rescale_payment_map(raw, target, dust_addr=ops)
+                k2, d2 = classify_intended_vs_chain(scaled, chain, dust_ignore=1000)
+                if k2 == "ok":
+                    cand_head = int(cand.get("max_seq") or 0)
+                    if cand_head > 0:
+                        locked_head = cand_head
+                    use_head = locked_head if locked_head is not None else share_head_seq
+                    payload = {
+                        "height": int(height),
+                        "reward_sats": reward_now,
+                        "cutoff_seq": prev.get("cutoff_seq"),
+                        "share_head_seq": use_head,
+                        "finder_address": finder_address or prev.get("finder_address") or "",
+                        "finder_credit_sats": int(prev.get("finder_credit_sats") or 0),
+                        "source": "coinbaser_cache_confirm_match",
+                        "matched_candidate": i,
+                        "outputs": [
+                            {
+                                "address": a,
+                                "sats": int(s),
+                                "value": int(s),
+                                "kind": "ops" if ops and a == ops else "tides",
+                            }
+                            for a, s in sorted(scaled.items(), key=lambda kv: -kv[1])
+                        ],
+                        "captured_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    snap = json.dumps(payload, separators=(",", ":"))
+                    note = (
+                        f"confirm matched coinbaser cache candidate#{i} "
+                        f"(dust≤1000); locked share_head={use_head}; "
+                        f"accepted full multi-out"
+                    )
+                    log.info("block %s %s", height, note)
+                    resolved = True
+                    break
+                # Soft ring match: same-payee dust drift vs chain → remember head
+                # so we can lock share_head when we accept chain as amount truth.
+                if soft_ring_head is None and is_same_payee_value_drift(d2) and len(scaled) >= 2:
+                    soft_ring_i = i
+                    soft_ring_head = int(cand.get("max_seq") or 0) or None
+            if not resolved and is_same_payee_value_drift(d) and len(chain) >= 2:
+                use_head = soft_ring_head if soft_ring_head else share_head_seq
+                if soft_ring_head:
+                    locked_head = soft_ring_head
+                snap = intended_snapshot_from_chain(
+                    blk,
+                    height=int(height),
+                    reward_sats=reward_now,
+                    share_head_seq=use_head,
+                    finder_address=finder_address,
+                    ops_address=settings.pool_ops_address,
+                    existing_snap=snap if isinstance(snap, str) else json.dumps(snap),
+                )
+                # Stamp source for ops/UI: chain truth + optional ring head lock.
+                try:
+                    payload = json.loads(snap)
+                    if soft_ring_head:
+                        payload["source"] = "onchain_refresh_ring_soft_match"
+                        payload["matched_candidate"] = soft_ring_i
+                        payload["share_head_seq"] = use_head
+                    else:
+                        payload["source"] = "onchain_refresh_confirm_drift"
+                    snap = json.dumps(payload, separators=(",", ":"))
+                except Exception:  # noqa: BLE001
+                    pass
+                if soft_ring_head:
+                    note = (
+                        f"confirm soft-matched coinbaser cache candidate#{soft_ring_i} "
+                        f"(same-payee dust); intended refreshed from chain; "
+                        f"locked share_head={use_head}; payout_mode=onchain_split"
+                    )
+                else:
+                    note = (
+                        "same-payee confirm drift (late shares / coinbaser cache race); "
+                        "intended refreshed from on-chain coinbase; payout_mode=onchain_split"
+                    )
+                log.info("block %s %s", height, note)
+                resolved = True
+            if not resolved:
+                mode = "needs_review"
+                note = f"coinbase≠intended (needs review): {d.summary()}"
+                log.warning("block %s %s", height, note)
+        else:
+            # Already ok — if snap carried a cache max_seq, prefer locking to it
+            try:
+                prev = json.loads(snap) if isinstance(snap, str) else {}
+                h = int(prev.get("share_head_seq") or prev.get("max_seq") or 0)
+                if h > 0 and share_head_seq and h < int(share_head_seq):
+                    locked_head = h
+            except Exception:  # noqa: BLE001
+                pass
 
     await store.set_block_payout_meta(
         int(height),
         payout_mode=mode,
         intended_payout_json=snap,
         manual_payout_note=note,
+        share_head_seq=locked_head,
     )
     return mode
 
@@ -384,8 +602,148 @@ def resolve_tides_block_near_height(
     return None
 
 
+async def adopt_missed_tides_finds(
+    store: Store,
+    settings: Settings,
+    *,
+    tip: int,
+    lookback: int = 16,
+) -> dict:
+    """Scan recent tip heights for TIDES+ops coinbases missing from ``blocks``.
+
+    Catches Prime-down / DATUM-disconnect races (e.g. #968837) and makes
+    double-finds visible. Inserts with intended-from-chain; confirms when
+    deep enough. Logs a clear warning so ops notices even if UI is cached.
+    """
+    lookback = max(3, min(int(lookback), 64))
+    if tip <= 0:
+        return {"adopted": 0, "heights": []}
+
+    conf_n = max(int(getattr(settings, "block_confirmations", 2) or 2), 1)
+    tag = settings.coinbase_tag_primary
+    legacy = str(getattr(settings, "coinbase_tag_legacy", "TIDES") or "TIDES")
+    ops = settings.pool_ops_address
+    known = {int(b.height) for b in await store.list_blocks(limit=max(lookback * 3, 48))}
+    rpc = BitcoinRPC(settings)
+    adopted: list[int] = []
+
+    def _scan() -> list[tuple[int, str, dict[str, Any]]]:
+        found: list[tuple[int, str, dict[str, Any]]] = []
+        for h in range(tip, max(0, tip - lookback) - 1, -1):
+            if h in known:
+                continue
+            try:
+                hx = rpc.call("getblockhash", [int(h)])
+            except BitcoinRPCError:
+                continue
+            if not isinstance(hx, str) or not _HEX_RE.match(hx):
+                continue
+            try:
+                blk = rpc.call("getblock", [hx, 2])
+            except BitcoinRPCError:
+                continue
+            if not coinbase_looks_like_ours(
+                blk, tag_primary=tag, ops_address=ops, tag_legacy=legacy
+            ):
+                continue
+            found.append((int(h), hx, blk))
+        return found
+
+    candidates = await asyncio.to_thread(_scan)
+    for height, hx, blk in candidates:
+        reward = coinbase_value_sats(blk) or 0
+        mode = pool_coinbase_payout_mode(
+            blk, tag_primary=tag, ops_address=ops, tag_legacy=legacy
+        ) or "onchain_split"
+        # Best-effort finder from secondary tag → unique nickname match
+        _ascii = coinbase_ascii(blk)
+        _matched = matched_pool_tag(_ascii, tag, legacy) or tag
+        nick = sanitize_nickname(
+            extract_secondary_tag(_ascii, _matched) or ""
+        )
+        finder: str | None = None
+        if nick:
+            try:
+                payees = list(coinbase_payout_map(blk).keys())
+                nmap = await store.nicknames_for_addresses(payees)
+                hits = [a for a, n in nmap.items() if n == nick]
+                if len(hits) == 1:
+                    finder = hits[0]
+            except Exception:  # noqa: BLE001
+                pass
+        status = "confirmed" if tip >= height + conf_n else "pending"
+        note = (
+            f"AUTO-ADOPTED missed TIDES find (not in blocks; tip scan). "
+            f"Likely Prime/DATUM gap at submit. tag2={nick or '-'}"
+        )
+        try:
+            head = await store.max_share_seq()
+            snap = intended_snapshot_from_chain(
+                blk,
+                height=height,
+                reward_sats=int(reward),
+                share_head_seq=head,
+                finder_address=finder,
+                ops_address=ops,
+            )
+            # Insert first — confirm helpers UPDATE an existing row.
+            await store.record_block(
+                height=height,
+                block_hash=hx,
+                difficulty=float(blk.get("difficulty") or 1),
+                reward_sats=int(reward),
+                finder_address=finder,
+                status=status,
+                share_head_seq=head,
+                payout_mode=mode,
+                intended_payout_json=snap,
+                manual_payout_done=False,
+                manual_payout_note=note,
+            )
+            if status == "confirmed":
+                mode = await apply_confirm_payout_checks(
+                    store,
+                    settings,
+                    height=height,
+                    blk=blk,
+                    existing_snap=snap,
+                    existing_note=note,
+                    share_head_seq=head,
+                    finder_address=finder,
+                    reward_fallback=int(reward),
+                )
+                if mode == "onchain_split":
+                    await store.set_block_payout_meta(
+                        height,
+                        manual_payout_done=True,
+                    )
+            try:
+                prev = await store.get_meta("last_height")
+                if not prev or int(prev) < height:
+                    await store.set_meta("last_height", str(height))
+            except Exception:  # noqa: BLE001
+                await store.set_meta("last_height", str(height))
+            adopted.append(height)
+            log.warning(
+                "MISSED TIDES FIND ADOPTED height=%s hash=%s status=%s mode=%s "
+                "finder=%s — was absent from blocks (tip lookback)",
+                height,
+                hx[:20],
+                status,
+                mode,
+                (finder or "")[:20],
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("adopt missed find %s failed: %s", height, exc)
+
+    return {"adopted": len(adopted), "heights": adopted}
+
+
 async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
-    """Advance pending → confirmed/orphaned once tip is N blocks ahead."""
+    """Advance pending → confirmed/orphaned once tip is N blocks ahead.
+
+    Also tip-scans for TIDES finds missing from ``blocks`` (Prime gap / double find).
+    """
     conf_n = max(int(getattr(settings, "block_confirmations", 2) or 2), 1)
     chain_raw = await store.get_meta("chain_height")
     try:
@@ -395,9 +753,18 @@ async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
     if tip <= 0:
         return {"tip": tip, "checked": 0}
 
+    # Always look for unrecorded TIDES tips (cheap lookback).
+    miss = await adopt_missed_tides_finds(store, settings, tip=tip)
+    adopted = int(miss.get("adopted") or 0)
+
     pending = await store.list_blocks_by_status("pending", limit=50)
     if not pending:
-        return {"tip": tip, "checked": 0}
+        return {
+            "tip": tip,
+            "checked": 0,
+            "adopted": adopted,
+            "missed_heights": miss.get("heights") or [],
+        }
 
     rpc = BitcoinRPC(settings)
     checked = 0
@@ -454,9 +821,15 @@ async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
                         b.height,
                         our_hash[:16],
                     )
+                elif mode == "needs_review":
+                    log.warning(
+                        "block %s confirmed needs_review hash=%s",
+                        b.height,
+                        our_hash[:16],
+                    )
             await store.set_block_status(b.height, "confirmed")
             confirmed += 1
-            if mode != "ops_manual":
+            if mode not in ("ops_manual", "needs_review"):
                 log.info("block %s confirmed hash=%s", b.height, our_hash[:16])
             continue
 
@@ -552,4 +925,6 @@ async def reconcile_pool_blocks(store: Store, settings: Settings) -> dict:
         "confirmed": confirmed,
         "orphaned": orphaned,
         "fixed": fixed,
+        "adopted": adopted,
+        "missed_heights": miss.get("heights") or [],
     }

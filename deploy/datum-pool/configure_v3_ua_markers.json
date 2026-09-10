@@ -1,0 +1,14 @@
+{
+  "markers": [
+    "b9ea7dc",
+    "convoy",
+    "3e252be",
+    "7491a509",
+    "7491a5099dd5d887a027c812f71de63e0d5986a3",
+    "3e252be3f1d77d73c6dc9eb0021184584406c4a8",
+    "b9ea7dc3eb91352565ab487ec55ed6ee5964a440",
+    "eb14f71a29d8d7906981bf6b441ff8999a964256",
+    "9dd53f91d43e"
+  ],
+  "note": "Hot-reloaded by Prime (mtime). Add known CONVOY/SV1/Leo githashes here — no restart once file-reload code is live. Auto-learn still persists successes to meta."
+}

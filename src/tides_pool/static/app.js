@@ -5,6 +5,81 @@ function quarantineBadge(c) {
   return ` <span class="badge-quarantine" title="${tip}">⚠ quarantined</span>`;
 }
 
+/** Coinbase size-class health (hourly): ⚠ if type-2 share of multi-out accepts ≥ threshold %. */
+function cbTypeBadge(c) {
+  if (!c) return "";
+  const st = (c.cb_type_status || "").toLowerCase();
+  // data-tip + tip-pin: click to keep tip open for screenshots (native title vanishes on key/click).
+  if (!st || st === "unknown") {
+    const tip = escapeHtml(
+      c.cb_type_tip ||
+        "No recent accepted multi-out share type yet — Gateway coinbase class unknown."
+    );
+    return ` <span class="cb-type-ico cb-type-unk tip-pin" data-tip="${tip}" role="button" tabindex="0" aria-label="${tip}">?</span>`;
+  }
+  if (st === "ok") {
+    const tip = escapeHtml(
+      c.cb_type_tip ||
+        "Type-2 share of multi-out accepts is below the warn threshold — OK."
+    );
+    return ` <span class="cb-type-ico cb-type-ok tip-pin" data-tip="${tip}" role="button" tabindex="0" aria-label="${tip}">✓</span>`;
+  }
+  if (st === "warn") {
+    const tip = escapeHtml(
+      c.cb_type_tip ||
+        "Type-2 (truncate-class) is a high % of multi-out accepts — DATUM may truncate the pool split."
+    );
+    return ` <span class="cb-type-ico cb-type-warn tip-pin" data-tip="${tip}" role="button" tabindex="0" aria-label="${tip}">⚠</span>`;
+  }
+  return "";
+}
+
+function fmtSnapAge(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+}
+
+/** Snapshot freshness (lab / cached dash). Live :8088 has no snapshot_as_of. */
+async function refreshSnapFreshness(health) {
+  const header = document.getElementById("snapFreshness");
+  const inline = document.getElementById("snapFreshnessInline");
+  let asOf = health && health.snapshot_as_of;
+  const isLab = !!(health && health.lab_website);
+  if (!asOf && isLab) {
+    try {
+      const meta = await jget("/api/meta");
+      asOf = meta && meta.as_of;
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  if (!asOf) {
+    if (header) header.hidden = true;
+    if (inline) inline.textContent = "";
+    return;
+  }
+  const t = Date.parse(asOf);
+  const ageSec = Number.isFinite(t) ? (Date.now() - t) / 1000 : null;
+  const ageTxt = ageSec != null ? fmtSnapAge(ageSec) : "unknown age";
+  const tip =
+    "Top cards, blocks, coinbaser: snap-first (instant), live cache refreshes in background ~10s. " +
+    "Gateway class: live overlay. Contributors / charts / miner pages: snapshot (~5 min, or right after a new pool find). " +
+    "How-to / connect: always current. " +
+    `Last contrib snap: ${asOf}`;
+  const short = `snap ${ageTxt} · cards cached`;
+  if (header) {
+    header.hidden = false;
+    header.textContent = short;
+    header.title = tip;
+    header.setAttribute("data-asof", asOf);
+  }
+  if (inline) {
+    inline.innerHTML = ` · <span title="${tip.replace(/"/g, "&quot;")}">${short}</span>`;
+  }
+}
+
 /** Header status chip from /health (Prime / coinbaser / RPC). */
 async function refreshHealthStrip() {
   const el = document.getElementById("healthStrip");
@@ -40,6 +115,7 @@ async function refreshHealthStrip() {
       ? warn.join("; ")
       : "Prime / coinbaser / RPC health — click for JSON";
     el.title = tip;
+    refreshSnapFreshness(h).catch((e) => console.error("snap freshness", e));
   } catch (e) {
     el.textContent = "🔴 health unreachable";
     el.className = "health-strip health-down";
@@ -57,13 +133,17 @@ function activityDot(c) {
     (c && c.activity === "live") ||
     (c && Number(c.hashrate_hs || 0) > 0);
   const thisBlock = Number((c && c.work_current) || 0) > 0;
+  // data-tip + tip-pin: click to keep tip open for screenshots (native title vanishes on key/click).
   if (live) {
-    return `<span class="activity-dot live" title="Hashing now (shares in the last ~10 minutes)"></span>`;
+    const tip = "Hashing now (shares in the last ~10 minutes)";
+    return `<span class="activity-dot live tip-pin" data-tip="${tip}" role="button" tabindex="0" aria-label="${tip}"></span>`;
   }
   if (thisBlock) {
-    return `<span class="activity-dot idle" title="Work on this block, but no shares in the last ~10 minutes"></span>`;
+    const tip = "Work on this block, but no shares in the last ~10 minutes";
+    return `<span class="activity-dot idle tip-pin" data-tip="${tip}" role="button" tabindex="0" aria-label="${tip}"></span>`;
   }
-  return `<span class="activity-dot offline" title="In the payout window, but no work on this block"></span>`;
+  const tip = "In the payout window, but no work on this block";
+  return `<span class="activity-dot offline tip-pin" data-tip="${tip}" role="button" tabindex="0" aria-label="${tip}"></span>`;
 }
 
 /** Last pool-find era with shares: CURRENT or "N ago" (dilution ages out). */
@@ -246,8 +326,13 @@ function clipCell(text, { title = "", wide = false, mono = false } = {}) {
 }
 
 function mempoolBase(info) {
-  const u = (info && info.mempool_explorer_url) || window.MEMPOOL_URL || "https://mempool.maveth.ca";
-  return String(u).replace(/\/$/, "");
+  let u =
+    (info && info.mempool_explorer_url) ||
+    window.MEMPOOL_URL ||
+    "https://mempool.guide";
+  u = String(u);
+  if (u.includes("mempool.maveth.ca")) u = "https://mempool.guide";
+  return u.replace(/\/$/, "");
 }
 
 function mempoolBlockHref(b, info) {
@@ -270,6 +355,25 @@ async function jget(url) {
   return r.json();
 }
 
+async function jgetRes(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " " + r.status);
+  return { data: await r.json(), headers: r.headers };
+}
+
+/** Lab/prod improvement: contributors page size (was 50). */
+// Snapshot is cheap — load the full window and collapse idle rows (no pager).
+const CONTRIB_PAGE_SIZE = 500;
+let contribPage = 0; // unused (kept for compat)
+let contribTotal = 0;
+
+function fmtLuckPct(v) {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  const n = Number(v);
+  const s = n >= 10 ? n.toFixed(0) : n.toFixed(1);
+  return `${s}% luck`;
+}
+
 function card(label, value, mono, note) {
   const noteHtml = note
     ? `<div class="card-note">${note}</div>`
@@ -277,14 +381,29 @@ function card(label, value, mono, note) {
   return `<div class="card"><div class="label">${label}</div><div class="value${mono ? " mono" : ""}">${value}</div>${noteHtml}</div>`;
 }
 
-/** Compact two-stat card value: 24h | 1wk (same box size as other cards). */
-function cardSplitValue(leftN, leftK, rightN, rightK, title) {
+/** Compact multi-stat card value: pairs of (n, k) then optional title.
+ *  e.g. cardSplitValue(a,"24h", b,"1wk", c,"all", "tooltip")
+ */
+function cardSplitValue(...args) {
+  let title = "";
+  const vals = args.slice();
+  // Trailing title when arg count is odd (2*N pairs + title)
+  if (vals.length >= 3 && vals.length % 2 === 1) {
+    title = String(vals.pop() ?? "");
+  }
+  const cells = [];
+  for (let i = 0; i + 1 < vals.length; i += 2) {
+    cells.push([vals[i], vals[i + 1]]);
+  }
   const tip = title ? ` title="${String(title).replace(/"/g, "&quot;")}"` : "";
-  return `<div class="card-split"${tip}>
-    <div class="split-cell"><span class="split-n">${leftN}</span><span class="split-k">${leftK}</span></div>
-    <div class="split-sep" aria-hidden="true"></div>
-    <div class="split-cell"><span class="split-n">${rightN}</span><span class="split-k">${rightK}</span></div>
-  </div>`;
+  const parts = [];
+  cells.forEach(([n, k], idx) => {
+    if (idx) parts.push(`<div class="split-sep" aria-hidden="true"></div>`);
+    parts.push(
+      `<div class="split-cell"><span class="split-n">${n}</span><span class="split-k">${k}</span></div>`
+    );
+  });
+  return `<div class="card-split"${tip}>${parts.join("")}</div>`;
 }
 
 function bpsPct(bps) {
@@ -294,11 +413,49 @@ function bpsPct(bps) {
   return (Number.isInteger(pct) ? String(pct) : pct.toFixed(1)) + "%";
 }
 
+function sv1WorkFeePct(stats) {
+  // Prefer live meta.runtime_fees (via /api/stats); fallback 1%.
+  const bps = Number(
+    stats && (stats.local_work_fee_bps ?? stats.local_work_fee_pct * 100)
+  );
+  if (Number.isFinite(bps) && bps >= 0) return bps / 100;
+  return 1;
+}
+
+function renderSv1FeeCopy(stats) {
+  const pct = sv1WorkFeePct(stats);
+  const pctTxt = Number.isInteger(pct) ? String(pct) : pct.toFixed(1);
+  const label = `variable (currently ${pctTxt}%)`;
+  const labelStrong = `variable work fee (currently ${pctTxt}%)`;
+  // Header promo + howto — filled from meta.runtime_fees via /api/stats.
+  document.querySelectorAll("[data-sv1-fee-label]").forEach((el) => {
+    el.textContent = label;
+  });
+  document.querySelectorAll("[data-sv1-fee-pct]").forEach((el) => {
+    el.textContent = `${pctTxt}%`;
+  });
+  document.querySelectorAll("[data-sv1-fee-strong]").forEach((el) => {
+    el.innerHTML = `<strong>${labelStrong}</strong>`;
+  });
+  document.querySelectorAll("[data-sv1-fee-short]").forEach((el) => {
+    el.textContent = `fee currently ${pctTxt}%`;
+  });
+  const promo = document.querySelector(".fee-promo");
+  if (promo) {
+    promo.title =
+      `DATUM / own Gateway: 0% coinbaser fee. Pool SV1 stratum: variable work fee (currently ${pctTxt}%); ` +
+      `half of that skim goes to live miners as STRATUM FEE.`;
+  }
+}
+
 function renderFeeFootnote(stats) {
   // Single location for fee / finder / window copy (coinbaser panel stays short).
   const el = document.getElementById("feeFootnote");
   if (!el) return;
+  renderSv1FeeCopy(stats);
   const fee = Number(stats.fee_bps ?? 0);
+  const sv1Pct = sv1WorkFeePct(stats);
+  const sv1Txt = Number.isInteger(sv1Pct) ? String(sv1Pct) : sv1Pct.toFixed(1);
   const windowBlocks = Number(stats.window_blocks ?? 8);
   const paidInWindow = Math.max(windowBlocks - 1, 0);
   const mode = stats.window_mode || "pool_finds";
@@ -312,8 +469,10 @@ function renderFeeFootnote(stats) {
       : `Payout window ≈ <strong>${windowBlocks}×</strong> network difficulty`;
   if (fee <= 0) {
     el.innerHTML =
-      `<strong>Fees:</strong> <strong>0%</strong> — coinbase pays window work only (no ops cut, no in-coinbase finder bonus). ` +
-      `Block-finder bonuses are paid manually by ops off-chain when applicable.<br />` +
+      `<strong>Fees:</strong> <strong>0%</strong> for DATUM / own-Gateway miners — coinbase pays window work only (no ops cut).<br />` +
+      `<strong>Pool SV1</strong> (<code>sv1.riptide.maveth.ca:23337</code>, <strong>strongly discouraged</strong>): ` +
+      `<span style="color:#e85d5d;font-weight:700">variable work fee (currently ${sv1Txt}%)</span> on that path only — ` +
+      `half of the skim → live miners as <code>STRATUM FEE</code>, half → ops as <code>OPERATION FEE</code> (not a coinbaser cut).<br />` +
       `${windowLabel}. <strong>Payout weight</strong> = sum of share difficulties (work), not share count. ` +
       `<strong>~H/s</strong> is estimated from recent work.`;
     return;
@@ -329,27 +488,209 @@ function renderFeeFootnote(stats) {
     `<strong>~H/s</strong> is estimated from recent work.`;
 }
 
-function blockStatusBadge(b) {
+function blockStatusBadge(b, info) {
   const st = (b && b.status) || "confirmed";
-  if (st === "pending") return `<span class="badge badge-pending" title="Waiting for chain confirmations">pending</span>`;
   if (st === "orphaned" || st === "misattributed") {
     const why = b.orphan_reason ? ` — ${b.orphan_reason}` : "";
     return `<span class="badge badge-orphan" title="Not on tip / no payout${why}">orphaned</span>`;
   }
+  // Chain-pending must not hide payout/review badges — show both when ops_manual / adj exists.
+  const confirming =
+    st === "pending"
+      ? `<span class="badge badge-pending" title="Waiting for chain confirmations">pending</span> `
+      : "";
   const mode = (b && b.payout_mode) || "onchain_split";
-  if (mode === "ops_manual") {
+  if (mode === "needs_review") {
     const done = !!(b && b.manual_payout_done);
+    const note =
+      (b && b.manual_payout_note) ||
+      "Intended payout ≠ on-chain coinbase (not drift) — ops should review";
+    const nOut = Array.isArray(b && b.intended_payout) ? b.intended_payout.length : 0;
+    const extra = nOut ? ` · snapshot ${nOut} line(s)` : "";
+    if (done) {
+      return `${confirming}<span class="badge badge-review-done" title="${escapeHtml(note)}${extra}">review done</span>`;
+    }
+    return `${confirming}<span class="badge badge-review" title="${escapeHtml(note)}${extra}">review</span>`;
+  }
+  if (mode === "ops_manual" || (b && b.manual_adjustment)) {
+    const done = !!(b && b.manual_payout_done);
+    const adj = b && b.manual_adjustment;
     const note =
       (b && b.manual_payout_note) ||
       "Coinbase was ops-only; ops will pay miners manually";
     const nOut = Array.isArray(b && b.intended_payout) ? b.intended_payout.length : 0;
     const extra = nOut ? ` · snapshot ${nOut} line(s)` : "";
-    if (done) {
-      return `<span class="badge badge-manual-done" title="${note}${extra}">manual paid</span>`;
+    // LISTED_ONLY / cross-user top-up: expandable table when adj present (pending OR paid)
+    if (adj && Array.isArray(adj.pays) && adj.pays.length) {
+      return confirming + manualAdjustmentBadge(adj, note, info);
     }
-    return `<span class="badge badge-manual" title="${note}${extra}">manual payout</span>`;
+    if (done) {
+      return `${confirming}<span class="badge badge-manual-done" title="${escapeHtml(note)}${extra}">manual paid</span>`;
+    }
+    if (mode === "ops_manual") {
+      return `${confirming}<span class="badge badge-manual" title="${escapeHtml(note)}${extra}">manual adjustment</span>`;
+    }
+  }
+  if (st === "pending") {
+    return `<span class="badge badge-pending" title="Waiting for chain confirmations">pending</span>`;
   }
   return `<span class="badge badge-ok">confirmed</span>`;
+}
+
+function manualAdjustmentBadge(adj, note, info) {
+  // Click-to-expand (not hover) — keeps page light; table only built when opened.
+  const n = (adj.pays || []).length;
+  const owed = Number(adj.total_owed_sats || 0);
+  const h = adj.height != null ? String(adj.height) : "x";
+  const id = `adj-${h}-${n}`;
+  const paid = !!(adj && (adj.txid || adj.total_paid_sats));
+  const st = String((adj && adj.status) || "").toLowerCase();
+  const matureH = Number(adj && adj.mature_height);
+  const maturityHold =
+    !paid &&
+    (st === "pending_maturity" ||
+      st === "hold_maturity" ||
+      (Number.isFinite(matureH) && matureH > 0 && !adj.txid));
+  let label = "manual adjustment";
+  if (paid) label = "manual paid";
+  else if (maturityHold) label = "manual adj · maturity";
+  else if (st === "pending" || !paid) label = "manual adjustment";
+  const tip = escapeHtml(
+    (adj.title || "Ops adjustment") +
+      (owed ? ` · ${owed.toLocaleString()} sats · ${n} payees` : ` · ${n} payees`) +
+      (maturityHold && Number.isFinite(matureH)
+        ? ` · HOLD until coinbase maturity @ ${matureH}`
+        : paid
+          ? ""
+          : " · PENDING") +
+      " — click to show"
+  );
+  return `<button type="button" class="badge badge-manual-adj adj-btn${maturityHold ? " adj-maturity" : ""}" data-adj-id="${escapeHtml(id)}" data-adj-height="${escapeHtml(h)}" title="${tip}">${label}</button>`;
+}
+
+function bindManualAdjustmentClicks(blocks, info) {
+  const byH = {};
+  (blocks || []).forEach((b) => {
+    if (b && b.manual_adjustment) byH[String(b.height)] = b;
+  });
+  document.querySelectorAll(".adj-btn[data-adj-id]").forEach((btn) => {
+    if (btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const tr = btn.closest("tr");
+      if (!tr) return;
+      const existing = tr.parentElement && tr.parentElement.querySelector(
+        `tr.adj-detail[data-for="${btn.getAttribute("data-adj-id")}"]`
+      );
+      if (existing) {
+        existing.remove();
+        btn.classList.remove("open");
+        return;
+      }
+      // close other open adj rows in same tbody
+      const tbody = tr.parentElement;
+      if (tbody) {
+        tbody.querySelectorAll("tr.adj-detail").forEach((r) => r.remove());
+        tbody.querySelectorAll(".adj-btn.open").forEach((b) => b.classList.remove("open"));
+      }
+      const h = btn.getAttribute("data-adj-height") || "";
+      const b = byH[h];
+      const adj = (b && b.manual_adjustment) || null;
+      if (!adj || !Array.isArray(adj.pays)) return;
+      const pays = adj.pays;
+      const title = adj.title || "Ops adjustment";
+      const owed = Number(adj.total_owed_sats || 0);
+      const paid = Number(adj.total_paid_sats || 0);
+      const matureH = Number(adj.mature_height);
+      const st = String(adj.status || "").toLowerCase();
+      const holdMaturity =
+        !(adj.txid || adj.total_paid_sats) &&
+        (st === "pending_maturity" ||
+          st === "hold_maturity" ||
+          (Number.isFinite(matureH) && matureH > 0));
+      const maturityLine = holdMaturity
+        ? `<div class="adj-pop-maturity">⏳ Hold send until coinbase maturity` +
+          (Number.isFinite(matureH) ? ` @ <strong>${matureH}</strong>` : "") +
+          ` (same unlock as this find’s coinbase / OPS leftover).` +
+          (adj.send_policy ? ` ${escapeHtml(String(adj.send_policy))}` : "") +
+          `</div>`
+        : "";
+      // Ops CORRECTION txs only (sendmany or per-payee) — never the find's coinbase.
+      const payTxids = [];
+      const seenTx = Object.create(null);
+      for (const p of pays) {
+        const t = String((p && p.txid) || "").trim();
+        if (t && !seenTx[t]) {
+          seenTx[t] = true;
+          payTxids.push(t);
+        }
+      }
+      const topTx = String(adj.txid || "").trim();
+      if (topTx && !seenTx[topTx]) payTxids.unshift(topTx);
+      const singleTx = payTxids.length === 1 ? payTxids[0] : "";
+      const txLink = (txid) => {
+        const short =
+          txid.length > 20 ? `${txid.slice(0, 12)}…${txid.slice(-8)}` : txid;
+        return `<a class="mono" href="${mempoolTxHref(txid, info)}" target="_blank" rel="noopener" title="${escapeHtml(txid)}">${escapeHtml(short)}</a>`;
+      };
+      let paidFooter = "";
+      if (payTxids.length === 1) {
+        paidFooter = `<div class="adj-pop-paid">✅ Ops correction · ${txLink(payTxids[0])} <span class="muted">(mempool · not coinbase)</span></div>`;
+      } else if (payTxids.length > 1) {
+        const links = payTxids
+          .map((t, i) => `<div class="adj-pop-txline">${i + 1}. ${txLink(t)}</div>`)
+          .join("");
+        paidFooter = `<div class="adj-pop-paid">✅ Ops corrections · <strong>${payTxids.length}</strong> separate payments <span class="muted">(not coinbase)</span>${links}</div>`;
+      } else if (!holdMaturity) {
+        paidFooter = `<div class="adj-pop-pending">⏳ Ops top-up not broadcast yet</div>`;
+      }
+      // Panel: title + owed/paid/payees + payout table only (no long ops note / RCA prose).
+      const rows = pays
+        .map((p) => {
+          const addr = String(p.address || "");
+          const short = addr.length > 14 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
+          const tx = String(p.txid || singleTx || "");
+          const txShort = tx.length > 16 ? `${tx.slice(0, 10)}…${tx.slice(-6)}` : tx;
+          const tip = p.note ? ` title="${escapeHtml(p.note)}"` : "";
+          const txCell = tx
+            ? `<a class="mono" href="${mempoolTxHref(tx, info)}" target="_blank" rel="noopener" title="Ops correction ${escapeHtml(tx)}">${escapeHtml(txShort)}</a>`
+            : holdMaturity
+              ? `<span class="muted">locked</span>`
+              : "—";
+          return `<tr${tip}>
+            <td class="num">${Number(p.sats || p.pay_sats || 0).toLocaleString()}</td>
+            <td class="mono"><a href="/address?a=${encodeURIComponent(addr)}" title="${escapeHtml(addr)}">${escapeHtml(short)}</a></td>
+            <td>${txCell}</td>
+          </tr>`;
+        })
+        .join("");
+      const detail = document.createElement("tr");
+      detail.className = "adj-detail";
+      detail.setAttribute("data-for", btn.getAttribute("data-adj-id") || "");
+      const colSpan = Math.max(tr.children.length || 0, 5);
+      detail.innerHTML = `<td colspan="${colSpan}">
+        <div class="adj-panel">
+          <div class="adj-pop-title">${escapeHtml(title)}</div>
+          <div class="adj-pop-sum">owed ${owed.toLocaleString()} sats · paid ${paid.toLocaleString()} sats · ${pays.length} payees</div>
+          ${maturityLine}
+          <table class="adj-pop-table">
+            <thead><tr><th>Sats</th><th>Address</th><th>Ops correction</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+          ${paidFooter}
+        </div>
+      </td>`;
+      tr.after(detail);
+      btn.classList.add("open");
+    });
+  });
+}
+
+function mempoolTxHref(txid, info) {
+  const base = mempoolBase(info);
+  return `${base}/tx/${encodeURIComponent(txid)}`;
 }
 
 function finderBonusSats(rewardEst) {
@@ -423,13 +764,228 @@ const COINBASER_PIE_COLORS = [
   "#ffd166",
 ];
 
-function coinbaserSliceLabel(o) {
-  const nick = (o.nickname || "").trim();
+/** Fee / ops synthetic workers — never use as a display nickname. */
+function isFeeOrOpsWorkerName(w) {
+  const s = String(w || "")
+    .trim()
+    .toUpperCase();
+  if (!s) return true;
+  if (s === "STRATUM FEE" || s === "OPERATION FEE" || s === "OPS") return true;
+  if (s.startsWith("OPS_ADJ_") || s.startsWith("OPS ")) return true;
+  return false;
+}
+
+/** Frontend-only labels (backend worker names unchanged). */
+function displayWorkerName(w) {
+  const raw = String(w || "").trim();
+  const u = raw.toUpperCase();
+  if (u === "OPERATION FEE" || u === "OPS") return "Ops fee";
+  if (u === "STRATUM FEE") return "Stratum fee share";
+  return raw;
+}
+
+/** address\\0worker keys for machines that found a non-orphan pool block (DATUM + SV1). */
+let finderWorkerKeys = new Set();
+
+function rememberFinderWorkers(blocks) {
+  const next = new Set();
+  for (const b of blocks || []) {
+    const st = String((b && b.status) || "confirmed");
+    if (st === "orphaned" || st === "misattributed") continue;
+    const addr = String((b && b.finder_address) || "").trim();
+    const worker = String((b && b.finder_worker) || "").trim();
+    if (!addr || !worker) continue;
+    // Skip fee placeholders — not a real mining machine.
+    if (isFeeOrOpsWorkerName(worker)) continue;
+    next.add(`${addr}\0${worker}`);
+  }
+  finderWorkerKeys = next;
+}
+
+function isFinderWorker(address, worker) {
+  const addr = String(address || "").trim();
+  const w = String(worker || "").trim();
+  if (!addr || !w || isFeeOrOpsWorkerName(w)) return false;
+  return finderWorkerKeys.has(`${addr}\0${w}`);
+}
+
+/** ★ badge for the stratum machine that submitted the winning share. */
+function finderWorkerStarHtml(worker, tip) {
+  const wn = displayWorkerName(worker) || worker || "worker";
+  const t = tip || `Block finder machine: ${wn}`;
+  return `<span class="finder-star tip-pin" data-tip="${escapeHtml(t)}" title="${escapeHtml(t)}" role="img" aria-label="${escapeHtml(t)}">★</span>`;
+}
+
+/** Blocks-table cell: always ★ + worker (this row is the find). */
+function blocksFinderWorkerCell(b) {
+  const raw = String((b && b.finder_worker) || "").trim();
+  if (!raw) {
+    return `<td class="clip"><span class="muted">—</span></td>`;
+  }
+  const label = displayWorkerName(raw);
+  const h = b && b.height != null ? `#${b.height}` : "a pool block";
+  const tip = `Block finder machine: ${raw} found ${h} (DATUM or SV1 stratum worker)`;
+  return `<td class="clip mono" title="${escapeHtml(tip)}"><span class="finder-worker-cell">${finderWorkerStarHtml(
+    raw,
+    tip
+  )}<span class="clip-text">${escapeHtml(label)}</span></span></td>`;
+}
+
+/** Inline ★ before a worker name when that machine found a recent pool block. */
+function workerFinderMark(address, worker) {
+  if (!isFinderWorker(address, worker)) return "";
+  const raw = String(worker || "").trim();
+  return finderWorkerStarHtml(
+    raw,
+    `Block finder machine: ${raw} found a pool block (recent finds)`
+  );
+}
+
+/** Dominant mining worker (by work, else shares) — skips STRATUM FEE etc. */
+function primaryMiningWorker(workers) {
+  const list = (Array.isArray(workers) ? workers : []).filter(
+    (w) => w && !isFeeOrOpsWorkerName(w.worker)
+  );
+  if (!list.length) return "";
+  list.sort(
+    (a, b) =>
+      Number(b.work || 0) - Number(a.work || 0) ||
+      Number(b.shares || 0) - Number(a.shares || 0)
+  );
+  return String(list[0].worker || "").trim();
+}
+
+/**
+ * Display nick: coinbase secondary tag if set; else primary stratum worker.
+ * Avoids empty nick + "MIISSBLUEE · STRATUM FEE" looking like a double name.
+ */
+function displayNick(o) {
+  const nick = String((o && o.nickname) || "").trim();
   if (nick) return nick;
-  const wlist = Array.isArray(o.workers) ? o.workers : [];
-  if (wlist.length === 1 && wlist[0].worker) return String(wlist[0].worker);
-  if ((o.name || "").trim()) return String(o.name).trim();
+  const primary = primaryMiningWorker(o && o.workers);
+  if (primary) return primary;
+  // Legacy compound name — take first segment if it isn't a fee worker.
+  const name = String((o && o.name) || "").trim();
+  if (name) {
+    const first = name.split("·")[0].trim();
+    if (first && !isFeeOrOpsWorkerName(first)) return first;
+  }
+  return "";
+}
+
+/**
+ * Small icons after the display name:
+ *  ?  = no nickname (and no worker fallback)
+ *  W  = showing stratum worker (no coinbase nick on file)
+ *  🏷 = stored nickname (coinbase tag / set — we don't store source yet)
+ *  🏆N = pool finds by this address in the current payout window
+ * Two icons (e.g. tag + finds) is intentional.
+ */
+function nickMetaBadges(c) {
+  const stored = String((c && c.nickname) || "").trim();
+  const display = displayNick(c);
+  const finds = Math.max(0, Number((c && c.luck_finds) || 0));
+  const bits = [];
+  if (!stored) {
+    if (!display) {
+      bits.push(
+        `<span class="nick-src nick-src-none tip-pin" data-tip="No nickname" title="No nickname" role="img" aria-label="No nickname">?</span>`
+      );
+    } else {
+      const wtip = `No coinbase nickname — showing worker ${display}`;
+      bits.push(
+        `<span class="nick-src nick-src-worker tip-pin" data-tip="${escapeHtml(wtip)}" title="${escapeHtml(wtip)}" role="img" aria-label="Worker name">W</span>`
+      );
+    }
+  } else if (!isAutoNickGroupName(stored)) {
+    const ttip = `Nickname on file (coinbase secondary tag): ${stored}`;
+    bits.push(
+      `<span class="nick-src nick-src-tag tip-pin" data-tip="${escapeHtml(ttip)}" title="${escapeHtml(ttip)}" role="img" aria-label="Nickname">🏷</span>`
+    );
+  }
+  if (finds > 0) {
+    const tip = `${finds} pool block${finds === 1 ? "" : "s"} found in this payout window`;
+    bits.push(
+      `<span class="nick-src nick-src-finds tip-pin" data-tip="${escapeHtml(tip)}" title="${escapeHtml(tip)}" role="img" aria-label="${escapeHtml(tip)}">🏆${finds}</span>`
+    );
+  }
+  return bits.length ? `<span class="nick-src-wrap">${bits.join("")}</span>` : "";
+}
+
+function coinbaserSliceLabel(o) {
+  // Stratum Endpoint = shared auto-nick for many SV1 addrs — never label the pie
+  // with that string (looks like one person). Use primary mining worker instead.
+  if (isAutoNickGroupName(o && o.nickname)) {
+    return (
+      primaryMiningWorker(o.workers) ||
+      shortAddr(o.address || "") ||
+      "Stratum"
+    );
+  }
+  const label = displayNick(o);
+  if (label) return label;
   return shortAddr(o.address || "");
+}
+
+/** Shared blue family for Stratum Endpoint payout addresses (not fee workers). */
+const STRATUM_PIE_COLOR = "#5b8def";
+/** Within the Stratum Endpoint group, only members ≥ this % of that group get own wedge. */
+const STRATUM_PIE_MEMBER_MIN_PCT = 15;
+
+function shadeHex(hex, delta) {
+  // delta −1..+1 — lighten/darken for sibling wedges of the same family.
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return hex;
+  const clamp = (n) => Math.max(0, Math.min(255, Math.round(n)));
+  const parts = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const out = parts.map((c) => {
+    if (delta >= 0) return clamp(c + (255 - c) * delta);
+    return clamp(c * (1 + delta));
+  });
+  return `#${out.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function buildStratumEndpointSegments(stratum) {
+  // One pie slice total; internal bands for members ≥15% of the SE group
+  // (mining worker labels — no STRATUM FEE). Smaller addrs fold into "+n".
+  const tot = stratum.reduce((s, o) => s + Number(o.sats || 0), 0) || 1;
+  const big = [];
+  const small = [];
+  for (const o of stratum) {
+    const sats = Number(o.sats || 0);
+    if ((100 * sats) / tot >= STRATUM_PIE_MEMBER_MIN_PCT && big.length < 4) {
+      big.push(o);
+    } else {
+      small.push(o);
+    }
+  }
+  if (!big.length && stratum.length) {
+    big.push(stratum[0]);
+    small.length = 0;
+    for (let i = 1; i < stratum.length; i++) small.push(stratum[i]);
+  }
+  const seShades = [0.12, -0.08, 0.22, -0.18];
+  const segments = big.map((o, i) => ({
+    label:
+      primaryMiningWorker(o.workers) ||
+      shortAddr(o.address || "") ||
+      "miner",
+    sats: Number(o.sats || 0),
+    address: o.address || "",
+    color: shadeHex(STRATUM_PIE_COLOR, seShades[i % seShades.length]),
+  }));
+  if (small.length) {
+    const restSats = small.reduce((s, o) => s + Number(o.sats || 0), 0);
+    if (restSats > 0) {
+      segments.push({
+        label: `+${small.length} more`,
+        sats: restSats,
+        address: "",
+        color: shadeHex(STRATUM_PIE_COLOR, -0.28),
+      });
+    }
+  }
+  return segments;
 }
 
 function buildCoinbaserPieSlices(outs) {
@@ -441,38 +997,68 @@ function buildCoinbaserPieSlices(outs) {
   }
   miners.sort((a, b) => Number(b.sats || 0) - Number(a.sats || 0));
   const minerTot = miners.reduce((s, o) => s + Number(o.sats || 0), 0) || 1;
+
+  // Stratum Endpoint stays ONE pie slice; subdivided inside (see segments).
+  const stratum = [];
+  const others = [];
+  for (const o of miners) {
+    if (isAutoNickGroupName(o.nickname)) stratum.push(o);
+    else others.push(o);
+  }
+
   const named = [];
   const rest = [];
-  for (const o of miners) {
+  for (const o of others) {
     const sats = Number(o.sats || 0);
     const pct = (100 * sats) / minerTot;
     if (named.length < COINBASER_PIE_MAX && pct >= COINBASER_PIE_MIN_PCT) named.push(o);
     else rest.push(o);
   }
-  // If threshold left almost everyone in Other, still show a fuller top-N.
-  if (named.length < 12 && miners.length > named.length) {
+  if (named.length < 12 && others.length > named.length) {
     const keep = Math.min(COINBASER_PIE_MAX, 16);
     named.length = 0;
     rest.length = 0;
-    for (let i = 0; i < miners.length; i++) {
-      if (i < keep) named.push(miners[i]);
-      else rest.push(miners[i]);
+    for (let i = 0; i < others.length; i++) {
+      if (i < keep) named.push(others[i]);
+      else rest.push(others[i]);
     }
   }
+
   const slices = named.map((o, i) => ({
     label: coinbaserSliceLabel(o),
     sats: Number(o.sats || 0),
     address: o.address || "",
     kind: o.kind || "tides",
     color: COINBASER_PIE_COLORS[i % COINBASER_PIE_COLORS.length],
+    family: "",
+    segments: null,
   }));
+
+  const stratumSats = stratum.reduce((s, o) => s + Number(o.sats || 0), 0);
+  if (stratumSats > 0) {
+    const segments = buildStratumEndpointSegments(stratum);
+    slices.push({
+      // Short pie label — avoid "Stratum Endpoint (N) (P%)" double-parens.
+      label: stratum.length > 1 ? `Stratum×${stratum.length}` : "Stratum",
+      sats: stratumSats,
+      address: "",
+      kind: "tides",
+      color: STRATUM_PIE_COLOR,
+      family: "stratum_endpoint",
+      // Internal bands drawn by plugin — one wedge, multiple payees visible.
+      segments,
+    });
+  }
+
   if (rest.length) {
     slices.push({
-      label: `Other (${rest.length})`,
+      label: `Other×${rest.length}`,
       sats: rest.reduce((s, o) => s + Number(o.sats || 0), 0),
       address: "",
       kind: "other",
       color: "#6b7280",
+      family: "",
+      segments: null,
     });
   }
   if (ops && Number(ops.sats || 0) > 0) {
@@ -482,8 +1068,11 @@ function buildCoinbaserPieSlices(outs) {
       address: ops.address || "",
       kind: "ops",
       color: "#9ca3af",
+      family: "",
+      segments: null,
     });
   }
+  slices.sort((a, b) => b.sats - a.sats);
   return slices.filter((s) => s.sats > 0);
 }
 
@@ -493,9 +1082,49 @@ function coinbaserPieSignature(slices) {
   return slices
     .map((s) => {
       const bp = Math.round((10000 * s.sats) / total);
-      return `${s.kind}:${s.address}:${s.label}:${bp}`;
+      const seg = (s.segments || [])
+        .map((g) => `${g.label}:${Math.round((10000 * g.sats) / (s.sats || 1))}`)
+        .join(",");
+      return `${s.kind}:${s.address}:${s.label}:${bp}:${seg}`;
     })
     .join("|");
+}
+
+/** Paint Stratum Endpoint internal bands (one wedge, subdivided by payee). */
+function paintSliceSegments(ctx, arc, slice) {
+  const segs = slice && slice.segments;
+  if (!arc || !segs || segs.length < 2) return;
+  const tot = segs.reduce((s, g) => s + Number(g.sats || 0), 0) || 1;
+  const span = arc.endAngle - arc.startAngle;
+  let a0 = arc.startAngle;
+  ctx.save();
+  for (let i = 0; i < segs.length; i++) {
+    const g = segs[i];
+    const a1 = a0 + span * (Number(g.sats || 0) / tot);
+    ctx.beginPath();
+    ctx.arc(arc.x, arc.y, arc.outerRadius, a0, a1);
+    ctx.arc(arc.x, arc.y, arc.innerRadius, a1, a0, true);
+    ctx.closePath();
+    ctx.fillStyle = g.color || slice.color;
+    ctx.fill();
+    // Thin radial divider between bands (skip first edge — chart border covers it).
+    if (i > 0) {
+      ctx.strokeStyle = "rgba(11, 18, 32, 0.85)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(
+        arc.x + Math.cos(a0) * arc.innerRadius,
+        arc.y + Math.sin(a0) * arc.innerRadius
+      );
+      ctx.lineTo(
+        arc.x + Math.cos(a0) * arc.outerRadius,
+        arc.y + Math.sin(a0) * arc.outerRadius
+      );
+      ctx.stroke();
+    }
+    a0 = a1;
+  }
+  ctx.restore();
 }
 
 /** Mempool-style edge labels + leader lines (left/right), no side legend. */
@@ -511,6 +1140,10 @@ function ensureCoinbaserOutlabelsPlugin() {
       const { ctx, chartArea } = chart;
       const slices = cfg.slices;
       const total = cfg.total || 1;
+      // Subdivide Stratum Endpoint (and any slice with segments) inside one wedge.
+      for (let i = 0; i < meta.data.length; i++) {
+        paintSliceSegments(ctx, meta.data[i], slices[i]);
+      }
       const gap = 16;
       const leftFinal = [];
       const rightFinal = [];
@@ -528,18 +1161,22 @@ function ensureCoinbaserOutlabelsPlugin() {
         const onRight = cos >= 0;
         const ax = arc.x + cos * arc.outerRadius;
         const ay = arc.y + sin * arc.outerRadius;
-        // Short radial stub — keep leaders tight so side columns keep name room.
-        const elbowR = arc.outerRadius + 10;
+        // Very short radial stub — labels sit close to the rim (short leader lines).
+        const elbowR = arc.outerRadius + 6;
         const ex = arc.x + cos * elbowR;
         const ey = arc.y + sin * elbowR;
         const pctTxt = pct >= 1 ? pct.toFixed(1) : pct.toFixed(2);
+        // Soft-cap long nicks before layout so leaders stay short; % always kept by fitLabel.
+        let name = String(s.label || "").trim();
+        if (name.length > 14) name = name.slice(0, 13) + "…";
         const item = {
           ax,
           ay,
           ex,
           ey,
           y: ey,
-          text: `${s.label} (${pctTxt}%)`,
+          name,
+          pctTxt,
           color: s.color,
           onRight,
         };
@@ -579,39 +1216,48 @@ function ensureCoinbaserOutlabelsPlugin() {
       ctx.font = "600 12px system-ui, Segoe UI, sans-serif";
       ctx.lineWidth = 1.5;
       ctx.lineJoin = "round";
-      // Labels in layout padding. Rim → short radial stub → one angled leg to text.
-      const labelGap = 6;
-      // Inset from canvas edges so trailing "%" isn't clipped on some displays.
-      const outerPad = 22;
+      // Labels hug the pie: short rim→stub→text leaders. Truncate NAME only — always keep "(N%)".
+      const labelGap = 4;
+      const rimGap = 8; // text starts just outside the doughnut
+      const edgePad = 8; // keep trailing % inside canvas
+      const fitLabel = (name, pctTxt, maxTw) => {
+        const suffix = ` (${pctTxt}%)`;
+        const sufW = ctx.measureText(suffix).width;
+        const budget = Math.max(20, maxTw - sufW);
+        let n = String(name || "").trim() || "?";
+        if (ctx.measureText(n).width <= budget) return n + suffix;
+        while (n.length > 2 && ctx.measureText(n + "…").width > budget) {
+          n = n.slice(0, -1);
+        }
+        return `${n}…${suffix}`;
+      };
       const drawSide = (arr, onRight) => {
         const colW = onRight ? chart.width - chartArea.right : chartArea.left;
-        const maxTw = Math.max(48, colW - outerPad - labelGap - 2);
+        const maxTw = Math.max(56, colW - rimGap - edgePad - 2);
         for (const it of arr) {
-          let text = it.text;
-          let tw = ctx.measureText(text).width;
-          if (tw > maxTw) {
-            // Truncate name so line + text fit the side column.
-            while (text.length > 4 && ctx.measureText(text).width > maxTw) {
-              text = text.slice(0, -2);
-            }
-            text = text.replace(/\s*\(?$/, "") + "…";
-            tw = ctx.measureText(text).width;
-          }
+          const text = fitLabel(it.name, it.pctTxt, maxTw);
+          const tw = ctx.measureText(text).width;
           let tx;
           let lineEndX;
           if (onRight) {
-            tx = chart.width - outerPad;
-            lineEndX = Math.max(chartArea.right + 4, tx - tw - labelGap);
-            ctx.textAlign = "right";
-          } else {
-            tx = outerPad;
-            lineEndX = Math.min(chartArea.left - 4, tx + tw + labelGap);
+            // Left-align just outside rim → short leader; name grows toward canvas edge.
+            tx = chartArea.right + rimGap;
+            // Cap so text doesn't run off the canvas (preserve %).
+            const maxTx = chart.width - edgePad - tw;
+            if (tx > maxTx) tx = Math.max(chartArea.right + 4, maxTx);
+            lineEndX = Math.max(it.ex, tx - labelGap);
             ctx.textAlign = "left";
+          } else {
+            // Right-align just outside rim.
+            tx = chartArea.left - rimGap;
+            const minTx = edgePad + tw;
+            if (tx < minTx) tx = Math.min(chartArea.left - 4, minTx);
+            lineEndX = Math.min(it.ex, tx + labelGap);
+            ctx.textAlign = "right";
           }
           ctx.strokeStyle = it.color || "rgba(180,180,180,0.75)";
           ctx.beginPath();
-          // Rim → radial stub (first alignment) → single angled leg to label
-          // (replaces the old vertical gutter + horizontal that crossed names).
+          // Rim → short radial stub → short angled leg to label.
           ctx.moveTo(it.ax, it.ay);
           ctx.lineTo(it.ex, it.ey);
           ctx.lineTo(lineEndX, it.y);
@@ -670,10 +1316,11 @@ function paintCoinbaserPie(outs, rewardEst) {
       cutout: "48%",
       animation: false,
       layout: {
-        // Wider side columns (~15%+) → shorter leaders + more room for names/%.
+        // Side columns for near-rim labels (short leaders). Narrow needs more
+        // name room or everything collapses to "Xx… (N%)".
         padding: (() => {
           const narrow = typeof window !== "undefined" && window.innerWidth < 700;
-          const side = narrow ? 100 : 165;
+          const side = narrow ? 122 : 165;
           return { top: 28, bottom: 28, left: side, right: side };
         })(),
       },
@@ -686,7 +1333,20 @@ function paintCoinbaserPie(outs, rewardEst) {
               const s = slices[ctx.dataIndex];
               if (!s) return "";
               const pct = (100 * s.sats) / total;
-              return ` ${s.label}: ${fmtBtc(s.sats)} (${pct.toFixed(2)}%)`;
+              const lines = [
+                ` ${s.label}: ${fmtBtc(s.sats)} (${pct.toFixed(2)}%)`,
+              ];
+              // Stratum Endpoint: show internal payee/worker breakup (no fee workers).
+              if (Array.isArray(s.segments) && s.segments.length) {
+                const st = s.sats || 1;
+                for (const g of s.segments) {
+                  const gp = (100 * Number(g.sats || 0)) / st;
+                  lines.push(
+                    `   · ${g.label}: ${fmtBtc(g.sats)} (${gp.toFixed(0)}% of group)`
+                  );
+                }
+              }
+              return lines;
             },
           },
         },
@@ -694,6 +1354,14 @@ function paintCoinbaserPie(outs, rewardEst) {
       onClick(_ev, els) {
         if (!els || !els.length) return;
         const s = slices[els[0].index];
+        // Grouped Stratum Endpoint has no single address — open first big member.
+        if (s && s.segments && s.segments.length) {
+          const hit = s.segments.find((g) => g.address);
+          if (hit && hit.address) {
+            window.location.href = `/address?a=${encodeURIComponent(hit.address)}`;
+            return;
+          }
+        }
         if (s && s.address) {
           window.location.href = `/address?a=${encodeURIComponent(s.address)}`;
         }
@@ -705,6 +1373,7 @@ const CONTRIB_OPEN_KEY = "tides_contrib_worker_open";
 const CONTRIB_SORT_KEY = "tides_contrib_sort";
 const CONTRIB_GROUP_KEY = "tides_contrib_group";
 const CONTRIB_SHOW_ALL_KEY = "tides_contrib_show_all";
+const CONTRIB_SHOW_ALL_SV1_KEY = "tides_contrib_show_all_sv1";
 const CONTRIB_NICK_OPEN_KEY = "tides_contrib_nick_open";
 const CONTRIB_SORT_OPTS = new Set([
   "work",
@@ -716,6 +1385,26 @@ const CONTRIB_SORT_OPTS = new Set([
   "pct",
 ]);
 const CONTRIB_GROUP_OPTS = new Set(["", "nickname"]);
+/** Only these nicknames auto-group in default (address) view — not a global nick mode. */
+const AUTO_NICK_GROUP_NAMES = new Set(["stratum endpoint"]);
+const CONTRIB_NICK_CLOSED_KEY = "tides_contrib_nick_closed";
+function isAutoNickGroupName(nick) {
+  return AUTO_NICK_GROUP_NAMES.has(((nick || "").trim().toLowerCase()));
+}
+function loadContribNickClosed() {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_NICK_CLOSED_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveContribNickClosed(set) {
+  try {
+    sessionStorage.setItem(CONTRIB_NICK_CLOSED_KEY, JSON.stringify([...set]));
+  } catch {
+    /* ignore */
+  }
+}
 function loadContribWorkerOpen() {
   try {
     return new Set(JSON.parse(sessionStorage.getItem(CONTRIB_OPEN_KEY) || "[]"));
@@ -805,16 +1494,219 @@ function saveContribShowAll(on) {
     /* ignore */
   }
 }
+function loadContribShowAllSv1() {
+  try {
+    return sessionStorage.getItem(CONTRIB_SHOW_ALL_SV1_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveContribShowAllSv1(on) {
+  try {
+    sessionStorage.setItem(CONTRIB_SHOW_ALL_SV1_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 let contribShowAll = loadContribShowAll();
+let contribShowAllSv1 = loadContribShowAllSv1();
 let contribLast = null;
 let contribSort = loadContribSort();
 let contribGroup = loadContribGroup();
 let contribWorkerOpen = loadContribWorkerOpen();
 let contribNickOpen = loadContribNickOpen();
+let contribNickClosed = loadContribNickClosed();
 
 function nickKey(c) {
   const n = ((c && c.nickname) || "").trim();
   return n || "\0"; // empty nick sorts / groups last
+}
+
+function autoNickGroupIsOpen(gid, label) {
+  if (contribNickClosed.has(gid)) return false;
+  if (contribNickOpen.has(gid)) return true;
+  // Stratum Endpoint (and other AUTO_NICK names): default expanded
+  return isAutoNickGroupName(label);
+}
+
+/** Shared HTML for a nickname parent row + member address rows. */
+function contribNickGroupBlock(g, displayIdx, { forceGroup = false } = {}) {
+  const parts = [];
+  let idx = displayIdx;
+  if ((!forceGroup && g.members.length === 1) || g.key === "\0") {
+    if (g.key === "\0") {
+      for (const c of g.members) {
+        idx += 1;
+        parts.push(contribAddressRowHtml(c, idx));
+      }
+      return { html: parts.join(""), displayIdx: idx };
+    }
+    if (!forceGroup && !isAutoNickGroupName(g.key)) {
+      idx += 1;
+      parts.push(contribAddressRowHtml(g.members[0], idx));
+      return { html: parts.join(""), displayIdx: idx };
+    }
+  }
+  const gid = `cn-${encodeURIComponent(g.key)}`;
+  const label = g.key;
+  const isOpen = autoNickGroupIsOpen(gid, label);
+  const totShares = g.members.reduce((s, c) => s + Number(c.shares || 0), 0);
+  const totWork = g.members.reduce((s, c) => s + Number(c.work || 0), 0);
+  const totCur = g.members.reduce((s, c) => s + Number(c.work_current || 0), 0);
+  const totHs = g.members.reduce((s, c) => s + Number(c.hashrate_hs || 0), 0);
+  const totPct = g.members.reduce((s, c) => s + Number(c.share_pct || 0), 0);
+  // Work-weighted % Blocks w Shares (same columns as address rows — no Last share).
+  let erasNum = 0;
+  let erasDen = 0;
+  for (const c of g.members) {
+    const w = Number(c.work || 0);
+    const p = Number(c.eras_with_work_pct);
+    if (w > 0 && Number.isFinite(p)) {
+      erasNum += p * w;
+      erasDen += w;
+    }
+  }
+  const erasPct = erasDen > 0 ? erasNum / erasDen : null;
+  const erasCell =
+    erasPct != null
+      ? `<td title="Work-weighted % Blocks w Shares across ${g.members.length} addresses">${erasPct.toFixed(0)}%</td>`
+      : `<td class="muted" title="% Blocks w Shares">—</td>`;
+  const anyLive = g.members.some(isContribLive);
+  const plus = `<button type="button" class="worker-plus nick-plus" data-nick-expand="${gid}" data-open="${
+    isOpen ? "1" : "0"
+  }" title="${g.members.length} payout addresses — click to expand">${isOpen ? "−" : "+"}</button>`;
+  idx += 1;
+  // Columns: activity | # | Address | Nickname | Shares | % Blocks w Shares | This block | Total work | ~H/s | Payout %
+  parts.push(`<tr class="nick-group" data-nick-group="${gid}">
+        <td class="activity-cell">${anyLive ? activityDot({ activity: "live", hashrate_hs: totHs }) : activityDot({ activity: "offline", hashrate_hs: 0 })}</td>
+        <td>${idx} ${plus}</td>
+        <td class="muted" title="Nickname group — payouts stay on child addresses">—</td>
+        ${clipCell(label, { title: `Nickname group: ${label}`, wide: true })}
+        <td title="Sum of member shares">${fmtInt(totShares)}</td>
+        ${erasCell}
+        <td title="Sum of member this-block work">${fmtInt(totCur)}</td>
+        <td title="Sum of member window work">${fmtInt(totWork)}</td>
+        <td title="Sum of member hashrates">${fmtHashrate(totHs)}</td>
+        <td title="Sum of member payout %">${totPct.toFixed(2)}%</td>
+      </tr>`);
+  for (const c of g.members) {
+    parts.push(
+      contribAddressRowHtml(c, "", {
+        indentNick: true,
+        nickParent: gid,
+        nickHidden: !isOpen,
+      })
+    );
+  }
+  return { html: parts.join(""), displayIdx: idx };
+}
+
+function isStratumEndpointMember(c) {
+  // Prefer share connection_type split; fall back to Stratum Endpoint nick.
+  const sv1 = Number((c && c.sv1_work) || 0);
+  const datum = Number((c && c.datum_work) || 0);
+  if (sv1 > 0) return true;
+  if (datum > 0) return false;
+  return isAutoNickGroupName(c && c.nickname);
+}
+
+function isDatumPathMember(c) {
+  const sv1 = Number((c && c.sv1_work) || 0);
+  const datum = Number((c && c.datum_work) || 0);
+  if (datum > 0) return true;
+  if (sv1 > 0) return false;
+  return !isAutoNickGroupName(c && c.nickname);
+}
+
+/** Path hashrate for totals: prefer filtered workers when dual-path; else parent. */
+function contribPathHs(c) {
+  const parent = Number((c && c.hashrate_hs) || 0);
+  const ws = Array.isArray(c && c.workers) ? c.workers : [];
+  if (!ws.length) return parent;
+  const wHs = ws.reduce((s, w) => s + Number(w.hashrate_hs || 0), 0);
+  const dual =
+    Number((c && c.sv1_work) || 0) > 0 && Number((c && c.datum_work) || 0) > 0;
+  if (dual && wHs > 0) return wHs;
+  return parent || wHs;
+}
+
+/** Sum metrics across all path contributors (full window list, not collapsed view). */
+function sumContribTotals(rows) {
+  let shares = 0;
+  let work = 0;
+  let workCur = 0;
+  let hs = 0;
+  let pct = 0;
+  let erasNum = 0;
+  let erasDen = 0;
+  for (const c of rows || []) {
+    shares += Number(c.shares || 0);
+    work += Number(c.work || 0);
+    workCur += Number(c.work_current || 0);
+    hs += contribPathHs(c);
+    pct += Number(c.share_pct || 0);
+    const w = Number(c.work || 0);
+    const p = Number(c.eras_with_work_pct);
+    if (w > 0 && Number.isFinite(p)) {
+      erasNum += p * w;
+      erasDen += w;
+    }
+  }
+  return {
+    n: (rows || []).length,
+    shares,
+    work,
+    workCur,
+    hs,
+    pct,
+    erasPct: erasDen > 0 ? erasNum / erasDen : null,
+  };
+}
+
+function contribTotalsRowHtml(tot, { hideNick = false, label = "Total" } = {}) {
+  const erasCell =
+    tot.erasPct != null
+      ? `<td title="Work-weighted % Blocks w Shares">${tot.erasPct.toFixed(0)}%</td>`
+      : `<td class="muted">—</td>`;
+  const nickCell = hideNick ? "" : `<td class="muted">—</td>`;
+  const tip = `All ${tot.n} contributor${tot.n === 1 ? "" : "s"} in this path (full window — not just hashing-now view)`;
+  return `<tr class="contrib-totals" title="${escapeHtml(tip)}">
+        <td class="activity-cell"></td>
+        <td class="muted">Σ</td>
+        <td><strong>${escapeHtml(label)}</strong> <span class="muted">(${fmtInt(tot.n)})</span></td>
+        ${nickCell}
+        <td title="Sum of shares">${fmtInt(tot.shares)}</td>
+        ${erasCell}
+        <td title="Sum of this-block work">${fmtInt(tot.workCur)}</td>
+        <td title="Sum of window work">${fmtInt(tot.work)}</td>
+        <td title="Sum of ~H/s on this path"><strong>${fmtHashrate(tot.hs)}</strong></td>
+        <td title="Sum of payout %">${Number(tot.pct || 0).toFixed(2)}%</td>
+      </tr>`;
+}
+
+/** Filter workers for a section; dual-path addresses can appear in both. */
+function filterContribForPath(c, path) {
+  const fee = (w) => {
+    const s = String((w && w.worker) || "").trim().toUpperCase();
+    return s === "STRATUM FEE" || s === "OPERATION FEE" || s === "OPS" || s.startsWith("OPS");
+  };
+  const workers = Array.isArray(c.workers) ? c.workers.slice() : [];
+  const want = path === "sv1" ? "sv1" : "datum";
+  const nickSv1 = isAutoNickGroupName(c.nickname);
+  const filtered = workers.filter((w) => {
+    if (fee(w)) return path === "sv1" && String(w.worker || "").toUpperCase() === "OPERATION FEE";
+    const ct = String((w && w.connection_type) || "").toLowerCase();
+    if (ct === "sv1" || ct === "datum") return ct === want;
+    // legacy untyped
+    return want === "sv1" ? nickSv1 : !nickSv1;
+  });
+  const out = Object.assign({}, c, { workers: filtered });
+  if (path === "sv1" && Number(c.sv1_work || 0) > 0) {
+    out.work = Number(c.sv1_work);
+  } else if (path === "datum" && Number(c.datum_work || 0) > 0) {
+    out.work = Number(c.datum_work);
+  }
+  return out;
 }
 
 function metricContrib(c, mode) {
@@ -922,6 +1814,17 @@ function isContribLive(c) {
   );
 }
 
+/** Pool ops fee payee (OPERATION FEE worker) — pin unranked at top of SV1. */
+function isOpsFeeContrib(c) {
+  const workers = Array.isArray(c && c.workers) ? c.workers : [];
+  return workers.some((w) => {
+    const s = String((w && w.worker) || "")
+      .trim()
+      .toUpperCase();
+    return s === "OPERATION FEE" || s === "OPS";
+  });
+}
+
 function renderCoinbaser(coinbaser) {
   const cbBody = document.getElementById("coinbaserBody");
   const cbNote = document.getElementById("coinbaserNote");
@@ -979,13 +1882,18 @@ function renderCoinbaser(coinbaser) {
       let rowClass = "";
       if (o.kind === "ops") rowClass = ' class="row-ops"';
       const wlist = Array.isArray(o.workers) ? o.workers : [];
-      let worker = (o.name || "").trim();
-      if (wlist.length > 1) {
-        worker = wlist.map((w) => w.worker).join(" · ");
-      } else if (wlist.length === 1) {
-        worker = wlist[0].worker || worker;
+      // Worker column: mining workers only (hide STRATUM FEE noise in the cell).
+      const mineWs = wlist.filter((w) => w && !isFeeOrOpsWorkerName(w.worker));
+      let worker = "";
+      if (mineWs.length > 1) {
+        worker = mineWs.map((w) => w.worker).join(" · ");
+      } else if (mineWs.length === 1) {
+        worker = String(mineWs[0].worker || "").trim();
+      } else {
+        worker = primaryMiningWorker(wlist) || "";
       }
-      const nick = (o.nickname || "").trim();
+      const nick = displayNick(o);
+      const nickFromWorker = nick && !(o.nickname || "").trim();
       const tip =
         wlist.length > 1
           ? wlist
@@ -1001,7 +1909,14 @@ function renderCoinbaser(coinbaser) {
       return `<tr${rowClass}>
       <td>${kindCell(o, coinbaser.reward_sats_estimate)}</td>
       ${clipCell(worker, { title: tip })}
-      ${clipCell(nick, { title: nick ? `Nickname: ${nick}` : "", wide: true })}
+      ${clipCell(nick, {
+        title: nick
+          ? nickFromWorker
+            ? `No coinbase secondary tag — showing primary worker ${nick}`
+            : `Nickname: ${nick}`
+          : "",
+        wide: true,
+      })}
       <td class="mono"><a href="/address?a=${encodeURIComponent(o.address)}" title="${o.address}">${shortAddr(o.address)}</a></td>
       <td title="${fmtBtcTitle(o.sats)}">${fmtBtc(o.sats)}</td>
     </tr>`;
@@ -1030,7 +1945,13 @@ function renderCoinbaser(coinbaser) {
 function contribAddressRowHtml(
   c,
   rankNum,
-  { indentNick = false, nickParent = null, nickHidden = false } = {}
+  {
+    indentNick = false,
+    nickParent = null,
+    nickHidden = false,
+    hideNick = false,
+    unranked = false,
+  } = {}
 ) {
   const wlist = Array.isArray(c.workers) ? c.workers : [];
   const multi = wlist.length > 1;
@@ -1041,23 +1962,49 @@ function contribAddressRowHtml(
         isOpen ? "1" : "0"
       }" title="${wlist.length} workers — click to expand">${isOpen ? "−" : "+"}</button>`
     : "";
-  const nick = (c.nickname || "").trim();
-  const nickCell = indentNick
-    ? `<td class="muted" title="${nick ? `Nickname: ${escapeHtml(nick)}` : ""}">↳</td>`
-    : clipCell(c.nickname, {
-        title: nick ? `Nickname: ${nick}` : "",
-        wide: true,
-      });
+  const nick = displayNick(c);
+  const nickFromWorker = nick && !(c.nickname || "").trim();
+  const nickBadges = nickMetaBadges(c);
+  // Under Stratum Endpoint group: nickname column shows worker name(s), not the group nick.
+  let nickCell = "";
+  if (!hideNick) {
+    if (indentNick && nickParent) {
+      if (!multi && wlist.length === 1) {
+        const wraw = wlist[0].worker;
+        const wn = displayWorkerName(wraw) || "—";
+        const star = workerFinderMark(c.address, wraw);
+        nickCell = `<td class="mono" title="Worker ${escapeHtml(wn)}">${star}${escapeHtml(wn)}</td>`;
+      } else if (multi) {
+        nickCell = `<td class="muted" title="${wlist.length} workers — expand">↳ workers</td>`;
+      } else {
+        nickCell = `<td class="muted">↳</td>`;
+      }
+    } else if (!nick) {
+      nickCell = `<td class="clip-wide"><span class="muted">—</span>${nickBadges}</td>`;
+    } else {
+      const tip = nickFromWorker
+        ? `No coinbase secondary tag — showing primary worker ${nick}`
+        : `Nickname: ${nick}`;
+      nickCell = `<td class="clip-wide" title="${escapeHtml(tip)}"><span class="clip-text">${escapeHtml(nick)}</span>${nickBadges}</td>`;
+    }
+  }
   const nickAttrs = nickParent
     ? ` class="nick-sub" data-nick-parent="${nickParent}"${nickHidden ? " hidden" : ""}`
     : "";
-  const main = `<tr${nickAttrs} data-addr="${escapeHtml(c.address)}">
+  const opsRankTip = "Operations share of fee (skim) — not ranked with SV1 miners";
+  const rankLabel = unranked
+    ? `<span class="kind-ico kind-ops" title="${opsRankTip}" aria-label="${opsRankTip}">${KIND_ICO.ops}</span>`
+    : String(rankNum);
+  const rankTitle = unranked ? ` title="${opsRankTip}"` : "";
+  // SV1 table omits nickname col — keep finds/?/W badges next to address.
+  const addrBadges = hideNick ? nickBadges : "";
+  const main = `<tr${nickAttrs}${unranked ? ' class="row-ops"' : ""} data-addr="${escapeHtml(c.address)}">
         <td class="activity-cell">${activityDot(c)}</td>
-        <td>${rankNum}${plus ? " " + plus : ""}</td>
-        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${quarantineBadge(c)}</td>
+        <td${rankTitle}>${rankLabel}${plus ? " " + plus : ""}</td>
+        <td class="mono"><a href="/address?a=${encodeURIComponent(c.address)}" title="${c.address}">${shortAddr(c.address)}</a>${cbTypeBadge(c)}${quarantineBadge(c)}${addrBadges}</td>
         ${nickCell}
         <td title="Accepted shares in the full payout window">${fmtInt(c.shares)}</td>
-        <td title="${lastShareTitle(c)}">${lastShareLabel(c)}</td>
+        <td title="${fmtInt(c.eras_with_work ?? 0)} of ${fmtInt(c.window_eras ?? 0)} block-periods with shares (not payout %)">${Number(c.eras_with_work_pct || 0).toFixed(0)}%</td>
         <td title="Work since last confirmed pool find (unfinished current block)">${fmtInt(c.work_current ?? 0)}</td>
         <td title="Total work in payout window only (7 confirmed + current) — not lifetime">${fmtInt(c.work)}</td>
         <td title="Rough hashrate from recent shares (~10m)">${fmtHashrate(c.hashrate_hs)}</td>
@@ -1067,16 +2014,39 @@ function contribAddressRowHtml(
   if (multi) {
     const workerHidden = nickHidden || !isOpen;
     const nickData = nickParent ? ` data-nick-parent="${nickParent}"` : "";
+    const underNickGroup = Boolean(nickParent);
     sub = wlist
       .map((w) => {
         const payoutCell =
           w.sats != null
             ? `<span title="${fmtBtcTitle(w.sats)}">${fmtBtc(w.sats)}</span>`
             : `<span title="≈ ${Number(w.share_pct || 0).toFixed(1)}% of this address">${Number(w.share_pct || 0).toFixed(1)}%</span>`;
+        const wraw = w.worker;
+        const wn = escapeHtml(displayWorkerName(wraw));
+        const star = workerFinderMark(c.address, wraw);
+        // Under Stratum Endpoint nick-group: address | worker-in-nickname-column
+        if (underNickGroup && !hideNick) {
+          return `<tr class="worker-sub" data-parent="${expandId}"${nickData}${workerHidden ? " hidden" : ""}>
+            <td></td>
+            <td></td>
+            <td class="mono muted" title="${escapeHtml(c.address)}">↳ ${shortAddr(c.address)}</td>
+            <td class="mono" title="Worker">${star}${wn}</td>
+            <td>${fmtInt(w.shares)}</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td>${fmtInt(w.work)}</td>
+            <td>${fmtHashrate(w.hashrate_hs)}</td>
+            <td>${payoutCell}</td>
+          </tr>`;
+        }
+        // SV1 table (no nickname col) or plain DATUM expand
+        const addrWorkerCell = hideNick
+          ? `<td class="muted">↳ <span class="mono">${star}${wn}</span></td>`
+          : `<td class="muted" colspan="2">↳ <span class="mono">${star}${wn}</span></td>`;
         return `<tr class="worker-sub" data-parent="${expandId}"${nickData}${workerHidden ? " hidden" : ""}>
             <td></td>
             <td></td>
-            <td class="muted" colspan="2">↳ <span class="mono">${escapeHtml(w.worker)}</span></td>
+            ${addrWorkerCell}
             <td>${fmtInt(w.shares)}</td>
             <td class="muted">—</td>
             <td class="muted">—</td>
@@ -1090,108 +2060,9 @@ function contribAddressRowHtml(
   return main + sub;
 }
 
-function renderContributors(contrib) {
-  const cbody = document.getElementById("contribBody");
-  const more = document.getElementById("contribMore");
-  const sortBar = document.getElementById("contribSortBar");
+
+function wireContribExpand(cbody) {
   if (!cbody) return;
-  contribLast = Array.isArray(contrib) ? contrib : [];
-  if (!contribLast.length) {
-    cbody.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
-    if (more) {
-      more.hidden = true;
-      more.innerHTML = "";
-    }
-    if (sortBar) sortBar.hidden = true;
-    return;
-  }
-  const live = contribLast.filter(isContribLive);
-  const restN = contribLast.length - live.length;
-  const showingAll = contribShowAll || restN <= 0;
-  // Sort/group controls only when the full window list is visible
-  if (sortBar) sortBar.hidden = !showingAll;
-  if (showingAll) {
-    wireContribSortBar();
-    const gSel = document.getElementById("contribGroup");
-    const sSel = document.getElementById("contribSort");
-    if (gSel) gSel.value = contribGroup || "";
-    if (sSel) sSel.value = CONTRIB_SORT_OPTS.has(contribSort) ? contribSort : "work";
-  }
-
-  const baseRows = showingAll ? contribLast : live;
-  const sortMode = showingAll ? contribSort : "work";
-  const groupMode = showingAll ? contribGroup : "";
-  const parts = [];
-  let displayIdx = 0;
-
-  if (groupMode === "nickname") {
-    // Group by nickname; sort groups (and members) by Sort-by metric (e.g. hashrate).
-    const byNick = new Map();
-    for (const c of baseRows) {
-      const k = nickKey(c);
-      if (!byNick.has(k)) byNick.set(k, []);
-      byNick.get(k).push(c);
-    }
-    let groups = [...byNick.entries()].map(([key, members]) => ({ key, members }));
-    groups = sortNickGroups(groups, sortMode);
-    for (const g of groups) {
-      if (g.members.length === 1 || g.key === "\0") {
-        // Don't group empty nicknames together as one blob — list singly.
-        if (g.key === "\0") {
-          for (const c of g.members) {
-            displayIdx += 1;
-            parts.push(contribAddressRowHtml(c, displayIdx));
-          }
-          continue;
-        }
-        displayIdx += 1;
-        parts.push(contribAddressRowHtml(g.members[0], displayIdx));
-        continue;
-      }
-      const gid = `cn-${encodeURIComponent(g.key)}`;
-      const isOpen = contribNickOpen.has(gid);
-      const totShares = g.members.reduce((s, c) => s + Number(c.shares || 0), 0);
-      const totWork = g.members.reduce((s, c) => s + Number(c.work || 0), 0);
-      const totCur = g.members.reduce((s, c) => s + Number(c.work_current || 0), 0);
-      const totHs = g.members.reduce((s, c) => s + Number(c.hashrate_hs || 0), 0);
-      const totPct = g.members.reduce((s, c) => s + Number(c.share_pct || 0), 0);
-      const anyLive = g.members.some(isContribLive);
-      const label = g.key;
-      const plus = `<button type="button" class="worker-plus nick-plus" data-nick-expand="${gid}" data-open="${
-        isOpen ? "1" : "0"
-      }" title="${g.members.length} addresses — click to expand">${isOpen ? "−" : "+"}</button>`;
-      displayIdx += 1;
-      parts.push(`<tr class="nick-group" data-nick-group="${gid}">
-        <td class="activity-cell">${anyLive ? activityDot({ activity: "live", hashrate_hs: totHs }) : activityDot({ activity: "offline", hashrate_hs: 0 })}</td>
-        <td>${displayIdx} ${plus}</td>
-        <td class="muted" title="${g.members.length} addresses with this nickname">${g.members.length} addresses</td>
-        ${clipCell(label, { title: `Nickname group: ${label}`, wide: true })}
-        <td>${fmtInt(totShares)}</td>
-        <td class="muted">—</td>
-        <td>${fmtInt(totCur)}</td>
-        <td>${fmtInt(totWork)}</td>
-        <td title="Sum of member hashrates">${fmtHashrate(totHs)}</td>
-        <td>${totPct.toFixed(2)}%</td>
-      </tr>`);
-      for (const c of g.members) {
-        parts.push(
-          contribAddressRowHtml(c, "", {
-            indentNick: true,
-            nickParent: gid,
-            nickHidden: !isOpen,
-          })
-        );
-      }
-    }
-  } else {
-    const rows = sortContributors(baseRows, sortMode);
-    for (const c of rows) {
-      displayIdx += 1;
-      parts.push(contribAddressRowHtml(c, displayIdx));
-    }
-  }
-
-  cbody.innerHTML = parts.join("");
   cbody.querySelectorAll(".worker-plus:not(.nick-plus)").forEach((btn) => {
     btn.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -1220,9 +2091,15 @@ function renderContributors(contrib) {
       ev.stopPropagation();
       const id = btn.getAttribute("data-nick-expand");
       const open = btn.dataset.open === "1";
-      if (open) contribNickOpen.delete(id);
-      else contribNickOpen.add(id);
+      if (open) {
+        contribNickOpen.delete(id);
+        contribNickClosed.add(id);
+      } else {
+        contribNickClosed.delete(id);
+        contribNickOpen.add(id);
+      }
       saveContribNickOpen(contribNickOpen);
+      saveContribNickClosed(contribNickClosed);
       btn.dataset.open = open ? "0" : "1";
       btn.textContent = open ? "+" : "−";
       cbody.querySelectorAll(`tr.nick-sub[data-nick-parent="${id}"]`).forEach((tr) => {
@@ -1234,15 +2111,219 @@ function renderContributors(contrib) {
       });
     });
   });
-  if (more) {
-    if (restN <= 0) {
+}
+
+/** SV1 clients with non-address usernames (templates yes, payout nowhere). */
+let sv1BadAuthLast = null;
+
+async function loadSv1BadAuth() {
+  try {
+    const r = await fetch("/static/data/sv1_bad_auth.json?ts=" + Date.now(), {
+      cache: "no-store",
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+function renderSv1BadAuth(data) {
+  const el = document.getElementById("sv1BadAuthWarn");
+  if (!el) return;
+  sv1BadAuthLast = data;
+  const clients = data && Array.isArray(data.clients) ? data.clients : [];
+  if (!data || !data.ok || !clients.length) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  const payoutNote =
+    (data && data.payout_detail) ||
+    "Rejected at Prime (bad payout address) — 0 shares credited; payout goes nowhere (not ops, not the miner).";
+  const items = clients
+    .map((c) => {
+      const user = escapeHtml(c.auth_username || c.payout_part || "?");
+      const tip = c.ip_tail ? `·${escapeHtml(c.ip_tail)}` : "";
+      const hr = c.hashrate ? ` · ${escapeHtml(c.hashrate)}` : "";
+      return `<li><span class="mono">${user}</span> <span class="muted">${tip}</span> · <strong>0 shares</strong>${hr}</li>`;
+    })
+    .join("");
+  el.hidden = false;
+  el.innerHTML =
+    `<strong class="warn">⚠ Unknown SV1 username(s)</strong>` +
+    ` <span class="muted">— not a BTC payout address · still may receive templates</span>` +
+    `<ul>${items}</ul>` +
+    `<p class="muted" style="margin:0.4rem 0 0">${escapeHtml(payoutNote)}</p>`;
+}
+
+function renderContributors(contrib) {
+  const cbodyDatum = document.getElementById("contribBodyDatum") || document.getElementById("contribBody");
+  const cbodySv1 = document.getElementById("contribBodySv1");
+  const more = document.getElementById("contribMore");
+  const moreSv1 = document.getElementById("contribMoreSv1");
+  const sortBar = document.getElementById("contribSortBar");
+  if (!cbodyDatum) return;
+  contribLast = Array.isArray(contrib) ? contrib : [];
+  if (!contribLast.length) {
+    cbodyDatum.innerHTML = `<tr><td colspan="10" class="muted">No shares in window yet</td></tr>`;
+    if (cbodySv1) cbodySv1.innerHTML = `<tr><td colspan="9" class="muted">No SV1 shares in window yet</td></tr>`;
+    const datumTotEl0 = document.getElementById("contribTotDatum");
+    const sv1TotEl0 = document.getElementById("contribTotSv1");
+    if (datumTotEl0) {
+      datumTotEl0.textContent = "";
+      datumTotEl0.title = "";
+    }
+    if (sv1TotEl0) {
+      sv1TotEl0.textContent = "";
+      sv1TotEl0.title = "";
+    }
+    if (more) {
       more.hidden = true;
       more.innerHTML = "";
+    }
+    if (moreSv1) {
+      moreSv1.hidden = true;
+      moreSv1.innerHTML = "";
+    }
+    if (sortBar) sortBar.hidden = true;
+    return;
+  }
+
+  // Path-split the full window first, then each section collapses independently.
+  const allDatum = [];
+  const allSv1 = [];
+  for (const c of contribLast) {
+    if (isDatumPathMember(c)) allDatum.push(filterContribForPath(c, "datum"));
+    if (isStratumEndpointMember(c)) allSv1.push(filterContribForPath(c, "sv1"));
+  }
+  const datumLive = allDatum.filter(isContribLive);
+  const datumRestN = allDatum.length - datumLive.length;
+  const showingAllDatum = contribShowAll || datumRestN <= 0;
+
+  const sv1Live = allSv1.filter(isContribLive);
+  const sv1RestN = allSv1.length - sv1Live.length;
+  const showingAllSv1 = contribShowAllSv1 || sv1RestN <= 0;
+
+  if (sortBar) sortBar.hidden = !showingAllDatum;
+  if (showingAllDatum) {
+    wireContribSortBar();
+    const gSel = document.getElementById("contribGroup");
+    const sSel = document.getElementById("contribSort");
+    if (gSel) gSel.value = contribGroup || "";
+    if (sSel) sSel.value = CONTRIB_SORT_OPTS.has(contribSort) ? contribSort : "work";
+  }
+
+  const sortModeDatum = showingAllDatum ? contribSort : "work";
+  const groupMode = showingAllDatum ? contribGroup : "";
+  const sortModeSv1 = showingAllSv1 ? contribSort : "work";
+  const datumRows = showingAllDatum ? allDatum : datumLive;
+  let sv1Rows = showingAllSv1 ? allSv1.slice() : sv1Live.slice();
+  // Always pin ops fee row when it has window work (even if not "live").
+  for (const c of allSv1) {
+    if (!isOpsFeeContrib(c)) continue;
+    if (!sv1Rows.some((r) => r.address === c.address)) sv1Rows.push(c);
+  }
+
+  // --- DATUM table (own ranking) ---
+  const datumParts = [];
+  let datumIdx = 0;
+  if (groupMode === "nickname") {
+    const byNick = new Map();
+    for (const c of datumRows) {
+      const k = nickKey(c);
+      if (!byNick.has(k)) byNick.set(k, []);
+      byNick.get(k).push(c);
+    }
+    let groups = [...byNick.entries()].map(([key, members]) => ({ key, members }));
+    groups = sortNickGroups(groups, sortModeDatum);
+    for (const g of groups) {
+      const block = contribNickGroupBlock(g, datumIdx, {
+        forceGroup: isAutoNickGroupName(g.key),
+      });
+      datumParts.push(block.html);
+      datumIdx = block.displayIdx;
+    }
+  } else {
+    const sortedDatum = sortContributors(datumRows, sortModeDatum);
+    if (sortedDatum.length) {
+      for (const c of sortedDatum) {
+        datumIdx += 1;
+        datumParts.push(contribAddressRowHtml(c, datumIdx));
+      }
     } else {
+      datumParts.push(
+        `<tr><td colspan="10" class="muted">No own-Gateway contributors in this view.</td></tr>`
+      );
+    }
+  }
+  const datumTot = sumContribTotals(allDatum);
+  if (allDatum.length) {
+    datumParts.push(
+      contribTotalsRowHtml(datumTot, { label: "Total DATUM" })
+    );
+  }
+  cbodyDatum.innerHTML = datumParts.join("");
+  wireContribExpand(cbodyDatum);
+  const datumTotEl = document.getElementById("contribTotDatum");
+  if (datumTotEl) {
+    datumTotEl.textContent = allDatum.length
+      ? `· ${fmtHashrate(datumTot.hs)} · ${fmtInt(datumTot.n)} addr`
+      : "";
+    datumTotEl.title = allDatum.length
+      ? `Total ~H/s across all ${datumTot.n} DATUM contributors in the payout window`
+      : "";
+  }
+
+  // --- SV1 table: ops unranked at top; no nickname col; own hashing-now collapse ---
+  if (cbodySv1) {
+    const sv1Parts = [];
+    const opsRows = sv1Rows.filter(isOpsFeeContrib);
+    const minerRows = sv1Rows.filter((c) => !isOpsFeeContrib(c));
+    const sortedOps = sortContributors(opsRows, sortModeSv1);
+    const sortedMiners = sortContributors(minerRows, sortModeSv1);
+    for (const c of sortedOps) {
+      sv1Parts.push(
+        contribAddressRowHtml(c, 0, { hideNick: true, unranked: true })
+      );
+    }
+    let sv1Idx = 0;
+    for (const c of sortedMiners) {
+      sv1Idx += 1;
+      sv1Parts.push(contribAddressRowHtml(c, sv1Idx, { hideNick: true }));
+    }
+    if (!sv1Parts.length) {
+      sv1Parts.push(
+        `<tr><td colspan="9" class="muted">No SV1 / Stratum Endpoint addresses in this view yet.</td></tr>`
+      );
+    }
+    const sv1Tot = sumContribTotals(allSv1);
+    if (allSv1.length) {
+      sv1Parts.push(
+        contribTotalsRowHtml(sv1Tot, { hideNick: true, label: "Total SV1" })
+      );
+    }
+    cbodySv1.innerHTML = sv1Parts.join("");
+    wireContribExpand(cbodySv1);
+    const sv1TotEl = document.getElementById("contribTotSv1");
+    if (sv1TotEl) {
+      sv1TotEl.textContent = allSv1.length
+        ? `· ${fmtHashrate(sv1Tot.hs)} · ${fmtInt(sv1Tot.n)} addr`
+        : "";
+      sv1TotEl.title = allSv1.length
+        ? `Total ~H/s across all ${sv1Tot.n} SV1 contributors in the payout window`
+        : "";
+    }
+  }
+
+  if (more) {
+    if (datumRestN > 0) {
       more.hidden = false;
       more.innerHTML = contribShowAll
-        ? `<button type="button" id="contribToggle">Show hashing now only (${live.length})</button>`
-        : `<button type="button" id="contribToggle">Show all ${contribLast.length} in window (+${restN} idle/offline)</button>`;
+        ? `<button type="button" id="contribToggle">Show hashing now only (${datumLive.length})</button>` +
+          ` <span class="muted">${allDatum.length} DATUM in window</span>`
+        : `<button type="button" id="contribToggle">Show all in window (+${datumRestN} idle/offline)</button>` +
+          ` <span class="muted">${datumLive.length} hashing now</span>`;
       const btn = document.getElementById("contribToggle");
       if (btn) {
         btn.onclick = () => {
@@ -1251,6 +2332,31 @@ function renderContributors(contrib) {
           renderContributors(contribLast);
         };
       }
+    } else {
+      more.hidden = true;
+      more.innerHTML = "";
+    }
+  }
+
+  if (moreSv1) {
+    if (sv1RestN > 0) {
+      moreSv1.hidden = false;
+      moreSv1.innerHTML = contribShowAllSv1
+        ? `<button type="button" id="contribToggleSv1">Show hashing now only (${sv1Live.length})</button>` +
+          ` <span class="muted">${allSv1.length} SV1 in window</span>`
+        : `<button type="button" id="contribToggleSv1">Show all in window (+${sv1RestN} idle/offline)</button>` +
+          ` <span class="muted">${sv1Live.length} hashing now</span>`;
+      const btn = document.getElementById("contribToggleSv1");
+      if (btn) {
+        btn.onclick = () => {
+          contribShowAllSv1 = !contribShowAllSv1;
+          saveContribShowAllSv1(contribShowAllSv1);
+          renderContributors(contribLast);
+        };
+      }
+    } else {
+      moreSv1.hidden = true;
+      moreSv1.innerHTML = "";
     }
   }
 }
@@ -1275,12 +2381,14 @@ function renderBlocksTable(blocks, bodyId, info) {
       const orphaned = st === "orphaned" || st === "misattributed";
       const pending = st === "pending";
       let rowClass = "";
+      const mode = ((b && b.payout_mode) || "");
       const manualPending =
         !orphaned &&
-        ((b && b.payout_mode) || "") === "ops_manual" &&
+        (mode === "ops_manual" || mode === "needs_review") &&
         !(b && b.manual_payout_done);
       if (orphaned) rowClass = ' class="row-orphan"';
       else if (pending) rowClass = ' class="row-pending"';
+      else if (manualPending && mode === "needs_review") rowClass = ' class="row-review"';
       else if (manualPending) rowClass = ' class="row-manual"';
       const reward = orphaned
         ? "-"
@@ -1291,7 +2399,6 @@ function renderBlocksTable(blocks, bodyId, info) {
       const heightCell = hashOk
         ? `<a class="mono" href="${href}" target="_blank" rel="noopener" title="${b.block_hash || ""}">${b.height}</a>`
         : `<span class="mono" title="${b.block_hash || ""}">${b.height}</span>`;
-      const worker = (b.finder_worker || "").trim();
       const nick = (b.finder_nickname || "").trim();
       const addr = b.finder_address || "";
       const addrCell = addr
@@ -1305,8 +2412,8 @@ function renderBlocksTable(blocks, bodyId, info) {
           : `<span title="${whenLocal}">${fmtAge(ageSec)}</span>`;
       return `<tr${rowClass}>
         <td>${heightCell}</td>
-        <td>${blockStatusBadge(b)}</td>
-        ${clipCell(worker, { title: worker ? `Stratum worker: ${worker}` : "", mono: true })}
+        <td>${blockStatusBadge(b, info)}</td>
+        ${blocksFinderWorkerCell(b)}
         ${clipCell(nick, { title: nick ? `Nickname: ${nick}` : "", wide: true })}
         <td>${addrCell}</td>
         <td>${reward}</td>
@@ -1315,6 +2422,8 @@ function renderBlocksTable(blocks, bodyId, info) {
       </tr>`;
     })
     .join("");
+  rememberFinderWorkers(blocks);
+  bindManualAdjustmentClicks(blocks, info);
 }
 
 /* --- Charts (Chart.js) -------------------------------------------------- */
@@ -1349,6 +2458,23 @@ function hsAxisMax(seriesList) {
     }
   }
   return m > 0 ? m * 1.15 : 1;
+}
+
+/** Network Y max in H/s: follow data (ceil to whole PH) so the line is not clipped. */
+function netAxisMaxHs(networkSeries) {
+  const raw = hsAxisMax([networkSeries || []]);
+  // At least 1 PH; ceil to next whole PH for readable ticks (0,1,2,…).
+  const ph = Math.max(1, Math.ceil(raw / 1e15));
+  return ph * 1e15;
+}
+
+/** Tick step for network axis (~4–8 labels). */
+function netAxisStepHs(axisMaxHs) {
+  const ph = Math.max(1, axisMaxHs / 1e15);
+  if (ph <= 6) return 1e15;
+  if (ph <= 12) return 2e15;
+  if (ph <= 30) return 5e15;
+  return 10e15;
 }
 
 function blockScatter(blocks, yMax, { inWindowOnly = null } = {}) {
@@ -1499,8 +2625,9 @@ async function loadPoolChart(range) {
   if (!canvas) return;
   const data = await jget("/api/charts/pool?range=" + encodeURIComponent(range || "24h"));
   const poolMax = hsAxisMax([data.pool]);
-  // Fixed network axis 0–5 PH/s — auto-zoom (~2.75–3.2) made the line look flat.
-  const NET_AXIS_MAX_HS = 5e15;
+  // Follow network HR (was hard-capped at 5 PH/s and clipped once tip rose above that).
+  const netAxisMax = netAxisMaxHs(data.network);
+  const netAxisStep = netAxisStepHs(netAxisMax);
   const findsIn = blockScatter(data.blocks, poolMax, { inWindowOnly: true });
   const findsOut = blockScatter(data.blocks, poolMax, { inWindowOnly: false });
   const win = data.window || null;
@@ -1517,6 +2644,29 @@ async function loadPoolChart(range) {
   }
   const xBound = chartXBounds(data);
   const allFinds = findsIn.concat(findsOut);
+  // Split solid history vs dashed open tip (incomplete bucket estimate).
+  const poolPts = (data.pool || []).map((p) => ({
+    x: p.t * 1000,
+    y: p.hs,
+    estimated: !!p.estimated,
+  }));
+  const netPts = (data.network || [])
+    .filter((p) => Number(p.hs) > 0)
+    .map((p) => ({
+      x: p.t * 1000,
+      y: p.hs,
+      estimated: !!p.estimated,
+    }));
+  const poolSolid = poolPts.filter((p) => !p.estimated);
+  const netSolid = netPts.filter((p) => !p.estimated);
+  const poolTip =
+    poolPts.length && poolPts[poolPts.length - 1].estimated
+      ? poolSolid.slice(-1).concat(poolPts.slice(-1))
+      : [];
+  const netTip =
+    netPts.length && netPts[netPts.length - 1].estimated
+      ? netSolid.slice(-1).concat(netPts.slice(-1))
+      : [];
   poolChartObj = destroyChart(poolChartObj);
   poolChartObj = new Chart(canvas.getContext("2d"), {
     plugins: [payoutWindowBandPlugin, findStemPlugin],
@@ -1526,7 +2676,7 @@ async function loadPoolChart(range) {
           type: "line",
           label: "Pool",
           yAxisID: "yPool",
-          data: (data.pool || []).map((p) => ({ x: p.t * 1000, y: p.hs })),
+          data: poolSolid,
           borderColor: "#3dd6c6",
           backgroundColor: "rgba(61,214,198,0.12)",
           borderWidth: 2,
@@ -1536,16 +2686,39 @@ async function loadPoolChart(range) {
         },
         {
           type: "line",
+          label: "Pool (est.)",
+          yAxisID: "yPool",
+          data: poolTip,
+          borderColor: "#3dd6c6",
+          borderWidth: 2,
+          borderDash: [6, 4],
+          pointRadius: 0,
+          tension: 0,
+          fill: false,
+        },
+        {
+          type: "line",
           label: netLabel,
           yAxisID: "yNet",
-          data: (data.network || [])
-            .filter((p) => Number(p.hs) > 0)
-            .map((p) => ({ x: p.t * 1000, y: p.hs })),
+          data: netSolid,
           borderColor: "#6ea8ff",
           borderWidth: 1.5,
           borderDash: netSrc === "samples" ? undefined : [4, 3],
           pointRadius: 0,
           tension: 0.2,
+          fill: false,
+          spanGaps: false,
+        },
+        {
+          type: "line",
+          label: "Network (est.)",
+          yAxisID: "yNet",
+          data: netTip,
+          borderColor: "#6ea8ff",
+          borderWidth: 1.5,
+          borderDash: [6, 4],
+          pointRadius: 0,
+          tension: 0,
           fill: false,
           spanGaps: false,
         },
@@ -1578,7 +2751,7 @@ async function loadPoolChart(range) {
       responsive: true,
       maintainAspectRatio: false,
       layout: { padding: { left: 0, right: 12, top: 4, bottom: 0 } },
-      interaction: { mode: "nearest", intersect: true },
+      interaction: { mode: "x", intersect: false },
       onHover(evt, els) {
         const tip = els && els.length ? els[0] : null;
         const ds = tip && poolChartObj?.data?.datasets?.[tip.datasetIndex];
@@ -1608,11 +2781,39 @@ async function loadPoolChart(range) {
             boxWidth: 12,
             usePointStyle: true,
             pointStyle: "circle",
+            filter(item) {
+              const t = item.text || "";
+              return t !== "Pool (est.)" && t !== "Network (est.)";
+            },
           },
         },
         tooltip: {
+          mode: "x",
+          intersect: false,
           callbacks: {
+            title(items) {
+              const x = items && items[0] && items[0].parsed && items[0].parsed.x;
+              if (x == null) return "";
+              try {
+                return fmtLocalTime(new Date(x).toISOString());
+              } catch {
+                return new Date(x).toLocaleString();
+              }
+            },
             label(ctx) {
+              const lab = ctx.dataset.label || "";
+              // Hide tip-estimate series when it only duplicates the solid point at same x
+              if (lab === "Pool (est.)" || lab === "Network (est.)") {
+                if (!(ctx.raw && ctx.raw.estimated)) return null;
+                const y = ctx.parsed && ctx.parsed.y;
+                const name = lab.startsWith("Pool") ? "Pool" : "Network";
+                return ` ${name}: ${fmtHashrate(y)} · est. (bucket filling)`;
+              }
+              if (lab === "Pool" || lab.startsWith("Network")) {
+                // If an est. point exists at this index tip, solid series still shows; fine.
+                const y = ctx.parsed && ctx.parsed.y;
+                return ` ${lab}: ${fmtHashrate(y)}`;
+              }
               if (ctx.dataset.label === "Block found" || ctx.dataset.label === "Older finds") {
                 const r = ctx.raw || {};
                 const nick = r.nickname ? ` · ${r.nickname}` : "";
@@ -1664,10 +2865,10 @@ async function loadPoolChart(range) {
           position: "right",
           title: { display: true, text: "Network (PH/s)", color: "#6ea8ff" },
           min: 0,
-          max: NET_AXIS_MAX_HS,
+          max: netAxisMax,
           ticks: {
             color: "#6ea8ff",
-            stepSize: 1e15,
+            stepSize: netAxisStep,
             callback(v) {
               return fmtAxisPH(v);
             },
@@ -1943,26 +3144,38 @@ async function loadUserChart(address, range) {
 }
 
 async function loadPool() {
-  // Fetch coinbaser first so the suggested split is never stuck on "Loading…"
-  // if contributors/blocks are slow or fail.
-  let coinbaser = null;
-  try {
-    coinbaser = await jget("/api/coinbaser");
-  } catch (e) {
-    console.error(e);
-  }
-  renderCoinbaser(coinbaser);
+  // Everything in parallel — public site is snap-first (instant) with a
+  // background live cache. Paint coinbaser as soon as it lands so the page
+  // never waits on a slow live proxy the way the old sync path did.
+  const contribUrl = "/api/contributors?limit=500&offset=0";
+  const coinbaserP = jget("/api/coinbaser")
+    .then((coinbaser) => {
+      renderCoinbaser(coinbaser);
+      return coinbaser;
+    })
+    .catch((e) => {
+      console.error(e);
+      renderCoinbaser(null);
+      return null;
+    });
 
   const settled = await Promise.allSettled([
     jget("/api/stats"),
-    jget("/api/contributors?limit=50"),
+    jgetRes(contribUrl),
     jget("/api/blocks?limit=8"),
     jget("/api/info"),
+    coinbaserP,
   ]);
   const val = (i, fallback) =>
     settled[i].status === "fulfilled" ? settled[i].value : fallback;
   const stats = val(0, null);
-  const contrib = val(1, []);
+  const contribPack = val(1, { data: [], headers: new Headers() });
+  const contrib = Array.isArray(contribPack.data)
+    ? contribPack.data
+    : contribPack.data || [];
+  const xt = contribPack.headers && contribPack.headers.get("X-Total-Count");
+  if (xt != null && xt !== "") contribTotal = Number(xt) || contrib.length;
+  else contribTotal = contrib.length;
   const blocks = val(2, []);
   const info = val(3, {});
   tidesInfo = info || {};
@@ -1989,7 +3202,17 @@ async function loadPool() {
   const sharePct = Number(stats.pool_network_share_pct || 0);
   const etaSec = stats.est_block_time_sec;
   const minersInWindow = Number(stats.addresses_in_window || 0);
-  const activeMiners = (Array.isArray(contrib) ? contrib : []).filter(isContribLive).length;
+  const contribRows = Array.isArray(contrib) ? contrib : [];
+  // Current = live now, split by path (DATUM vs Stratum/SV1 subsection — not port count).
+  // Dual-path addresses can appear in both Current columns.
+  const activeDatum = contribRows.filter(
+    (c) => isContribLive(c) && isDatumPathMember(c) && !isOpsFeeContrib(c)
+  ).length;
+  // Stratum = live SV1 subsection payees (not "1 port"). Skip ops-fee synthetic row.
+  const activeStratum = contribRows.filter(
+    (c) =>
+      isContribLive(c) && isStratumEndpointMember(c) && !isOpsFeeContrib(c)
+  ).length;
   const hs1h = Number(stats.hashrate_hs_1h || 0);
   const estPerThs = Number(stats.est_sats_per_day_per_ths);
   const estPerThsTip =
@@ -2033,23 +3256,30 @@ async function loadPool() {
     card(
       "Miners",
       cardSplitValue(
-        fmtInt(activeMiners),
-        "active",
+        fmtInt(activeDatum),
+        "active DATUM",
+        fmtInt(activeStratum),
+        "active Stratum",
         fmtInt(minersInWindow),
         "in window",
-        "Active = hashing in the last ~10 minutes · In window = payout addresses with work in the current window"
+        "Active = hashing now (~10 min): DATUM path vs Stratum (SV1) subsection · In window = all payout addresses with work in the TIDES window (DATUM+Stratum combined)"
       )
     ),
     card(
       "Blocks found",
       cardSplitValue(
-        fmtInt(stats.blocks_last_24h),
+        `${fmtInt(stats.blocks_last_24h)}<span class="split-luck">${fmtLuckPct(stats.luck_24h_pct)}</span>`,
         "24h",
-        fmtInt(stats.blocks_last_7d ?? stats.blocks_last_24h),
+        `${fmtInt(stats.blocks_last_7d ?? stats.blocks_last_24h)}<span class="split-luck">${fmtLuckPct(stats.luck_7d_pct)}</span>`,
         "1wk",
-        Number(stats.orphans_last_24h || 0) || Number(stats.orphans_last_7d || 0)
-          ? `Orphans excluded · 24h orphaned ${fmtInt(stats.orphans_last_24h || 0)} · 1wk orphaned ${fmtInt(stats.orphans_last_7d || 0)}`
-          : "Confirmed + pending finds (orphans excluded)"
+        `${fmtInt(stats.blocks_all_time ?? 0)}<span class="split-luck">${fmtLuckPct(stats.luck_all_pct)}</span>`,
+        "all",
+        "Luck% = 100 × Σ(network difficulty of finds) ÷ pool share-work in that period (handles retargets). 100% = expected. Orphans excluded from find counts."
+          + (Number(stats.orphans_last_24h || 0) ||
+            Number(stats.orphans_last_7d || 0) ||
+            Number(stats.orphans_all_time || 0)
+            ? ` · Orphans 24h ${fmtInt(stats.orphans_last_24h || 0)} · 1wk ${fmtInt(stats.orphans_last_7d || 0)} · all ${fmtInt(stats.orphans_all_time || 0)}`
+            : "")
       )
     ),
     card(
@@ -2061,6 +3291,8 @@ async function loadPool() {
   ].join("");
   renderFeeFootnote(stats);
 
+  // Prime finder ★ keys before contrib rows so worker machines get the star.
+  rememberFinderWorkers(blocks);
   renderContributors(contrib);
 
   renderBlocksTable(blocks, "blocksBody", info);
@@ -2092,6 +3324,115 @@ async function loadPool() {
   } catch (e) {
     console.error("pool chart", e);
   }
+  // Live block list may be ahead of snapshotted chart — pin find markers on the graph.
+  mergeLiveFindsIntoPoolChart(blocks);
+  const findH = Number(stats.last_pool_block_height || 0);
+  if (findH > 0 && watchedFindHeight == null) watchedFindHeight = findH;
+}
+
+/** Last pool-find height the watcher has reacted to. */
+let watchedFindHeight = null;
+let findSnapRefreshBusy = false;
+const FIND_WATCH_MS = 15000;
+
+/** Inject live /api/blocks finds onto the pool chart (snap chart may lag). */
+function mergeLiveFindsIntoPoolChart(apiBlocks) {
+  if (!poolChartObj || !Array.isArray(apiBlocks) || !apiBlocks.length) return;
+  const dsIn = (poolChartObj.data.datasets || []).find(
+    (d) => d && d.label === "Block found"
+  );
+  if (!dsIn) return;
+  const existing = new Set((dsIn.data || []).map((p) => Number(p.height)));
+  let y =
+    (dsIn.data && dsIn.data[0] && Number(dsIn.data[0].y)) ||
+    (poolChartObj.scales &&
+      poolChartObj.scales.yPool &&
+      poolChartObj.scales.yPool.max * 0.92) ||
+    1;
+  let added = 0;
+  for (const b of apiBlocks) {
+    const height = Number(b && b.height);
+    if (!height || existing.has(height)) continue;
+    const ms = b.accounted_at ? Date.parse(b.accounted_at) : NaN;
+    if (!Number.isFinite(ms)) continue;
+    dsIn.data.push({
+      x: ms,
+      y,
+      height,
+      block_hash: b.block_hash,
+      worker: b.finder_worker,
+      nickname: b.finder_nickname,
+    });
+    existing.add(height);
+    added += 1;
+  }
+  if (added) poolChartObj.update("none");
+}
+
+async function requestSnapRefresh() {
+  try {
+    await fetch("/api/snap/refresh", { method: "POST", cache: "no-store" });
+  } catch (e) {
+    console.error("snap refresh", e);
+  }
+}
+
+/** After a find: live cards/blocks now; keep reloading until contrib snap catches up. */
+async function refreshAfterNewFind() {
+  if (findSnapRefreshBusy) return;
+  findSnapRefreshBusy = true;
+  try {
+    await requestSnapRefresh();
+    const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
+    const addr = qs("a");
+    const beforeAsOf = (() => {
+      try {
+        return document.getElementById("snapFreshness")?.getAttribute("data-asof") || "";
+      } catch (_) {
+        return "";
+      }
+    })();
+    for (let i = 0; i < 12; i++) {
+      if (path === "/blocks") await loadBlocksPage();
+      else if (!addr) await loadPool();
+      else await loadUser(addr);
+      // Snap rebuild usually finishes in ~2–4 min; poll often early for contrib/this-block.
+      await new Promise((r) => setTimeout(r, i < 4 ? 8000 : 15000));
+      try {
+        const meta = await jget("/api/meta");
+        const asOf = (meta && meta.as_of) || "";
+        if (asOf && asOf !== beforeAsOf) {
+          if (path === "/blocks") await loadBlocksPage();
+          else if (!addr) await loadPool();
+          else await loadUser(addr);
+          break;
+        }
+      } catch (_) {
+        /* keep trying */
+      }
+    }
+  } finally {
+    findSnapRefreshBusy = false;
+  }
+}
+
+async function pollForNewFinds() {
+  if (document.visibilityState === "hidden") return;
+  try {
+    const stats = await jget("/api/stats");
+    const h = Number(stats && stats.last_pool_block_height) || 0;
+    if (!h) return;
+    if (watchedFindHeight == null) {
+      watchedFindHeight = h;
+      return;
+    }
+    if (h <= watchedFindHeight) return;
+    watchedFindHeight = h;
+    // No banner — kick snap rebuild + refresh cards/blocks/contrib/chart.
+    refreshAfterNewFind().catch((e) => console.error("find refresh", e));
+  } catch (e) {
+    console.error("find watch", e);
+  }
 }
 
 async function loadBlocksPage() {
@@ -2118,6 +3459,19 @@ async function loadBlocksPage() {
   if (foot) {
     foot.textContent = `${info.name || "tides-pool"} ${info.version || ""} · ${stats.pool_name || ""}`;
   }
+}
+
+/** Map a miner payout line → block-shaped object for blockStatusBadge. */
+function payoutAsBlock(p) {
+  return {
+    height: p.height,
+    status: p.status || "confirmed",
+    payout_mode: p.payout_mode || "onchain_split",
+    manual_payout_done: !!(p && p.manual_payout_done),
+    manual_payout_note: p.manual_payout_note || null,
+    manual_adjustment: p.manual_adjustment || null,
+    intended_payout: null,
+  };
 }
 
 function renderPayoutHistory(payouts) {
@@ -2151,11 +3505,15 @@ function renderPayoutHistory(payouts) {
         p.kind === "finder"
           ? `<span class="kind-finder-hist">finder</span>`
           : `<span class="kind-tides">tides</span>`;
-      let status = p.status || "—";
-      if (p.kind === "finder" && p.paid_in_height != null) {
-        status = `paid @ ${p.paid_in_height}`;
-      } else if (p.kind === "finder" && p.status === "unpaid") {
-        status = "unpaid";
+      // Same status language as Recent pool blocks (manual / review / confirmed).
+      let statusHtml;
+      if (p.kind === "finder" && p.status === "unpaid") {
+        statusHtml = `<span class="badge badge-pending" title="Finder bonus not yet paid in a later coinbase">unpaid</span>`;
+      } else {
+        statusHtml = blockStatusBadge(payoutAsBlock(p), tidesInfo);
+        if (p.kind === "finder" && p.paid_in_height != null) {
+          statusHtml += ` <span class="muted" title="Finder bonus paid in this later find">@${p.paid_in_height}</span>`;
+        }
       }
       const when = p.accounted_at ? fmtLocalTime(p.accounted_at) : "—";
       const href = mempoolBlockHref(
@@ -2165,15 +3523,28 @@ function renderPayoutHistory(payouts) {
       const hCell = href
         ? `<a href="${href}" target="_blank" rel="noopener" class="mono">${p.height}</a>`
         : `<span class="mono">${p.height}</span>`;
-      return `<tr>
+      const mode = String(p.payout_mode || "");
+      const manualPending =
+        (mode === "ops_manual" || mode === "needs_review") && !p.manual_payout_done;
+      const rowClass = manualPending
+        ? mode === "needs_review"
+          ? ' class="row-review"'
+          : ' class="row-manual"'
+        : "";
+      return `<tr${rowClass}>
         <td>${hCell}</td>
         <td>${kind}</td>
         <td title="${fmtBtcTitle(p.sats)}">${fmtBtc(p.sats)}</td>
-        <td>${status}</td>
+        <td>${statusHtml}</td>
         <td class="mono">${when}</td>
       </tr>`;
     })
     .join("");
+  // Expandable adj tables — same click handler as main Recent blocks table.
+  const asBlocks = payouts.map(payoutAsBlock).filter((b) => b.manual_adjustment);
+  if (asBlocks.length) {
+    bindManualAdjustmentClicks(asBlocks, tidesInfo);
+  }
 }
 
 function updateSharesPager() {
@@ -2271,7 +3642,7 @@ async function loadUser(address) {
   userWorkerVisible = loadUserWorkerVisible(address);
   userChartData = null;
   wireSharesPager();
-  const [user, payouts, stats, info] = await Promise.all([
+  const [user, payouts, stats, info, blocks] = await Promise.all([
     jget("/api/user/" + encodeURIComponent(address)),
     jget("/api/user/" + encodeURIComponent(address) + "/payouts?limit=100").catch(
       (e) => {
@@ -2281,8 +3652,10 @@ async function loadUser(address) {
     ),
     jget("/api/stats"),
     jget("/api/info"),
+    jget("/api/blocks?limit=100").catch(() => []),
   ]);
   tidesInfo = info || tidesInfo || {};
+  rememberFinderWorkers(Array.isArray(blocks) ? blocks : []);
   document.getElementById("userTitle").innerHTML =
     address + (user.quarantined ? quarantineBadge(user) : "");
 
@@ -2311,7 +3684,7 @@ async function loadUser(address) {
     qCard,
     card(
       "Total earned",
-      `<span title="${fmtBtcTitle(user.total_earned_sats)} — TIDES share lines in past finds + paid finder bonuses">${fmtBtc(user.total_earned_sats)}</span>`,
+      `<span title="${fmtBtcTitle(user.total_earned_sats)} — TIDES share lines in past finds">${fmtBtc(user.total_earned_sats)}</span>`,
       true
     ),
     lastFindCard,
@@ -2319,7 +3692,7 @@ async function loadUser(address) {
     card("Work in window", fmtInt(user.work_in_window)),
     card(
       "Est. next block payout",
-      `<span title="${fmtBtcTitle(user.estimated_next_sats || 0)} — your tides window share (finder bonuses are paid manually by ops, not in coinbase)">${fmtBtc(user.estimated_next_sats || 0)}</span>`
+      `<span title="${fmtBtcTitle(user.estimated_next_sats || 0)} — your tides window share">${fmtBtc(user.estimated_next_sats || 0)}</span>`
     ),
     card(
       "Workers",
@@ -2347,8 +3720,9 @@ async function loadUser(address) {
             ? ` · est. next ${fmtBtc(w.sats)} (${fmtBtcTitle(w.sats)})`
             : ` · ${Number(w.share_pct || 0).toFixed(1)}% of this address`);
         const wid = `uw-${escapeHtml(w.worker)}`;
+        const star = workerFinderMark(address, w.worker);
         parts.push(`<tr title="${escapeHtml(tip)}">
-          <td class="mono">${escapeHtml(w.worker)}</td>
+          <td class="mono">${star}${escapeHtml(displayWorkerName(w.worker) || w.worker)}</td>
           <td title="Shares in payout window (7 confirmed + current)">${fmtInt(w.shares)}</td>
           <td title="Recent hashrate (~10m)">${fmtHashrate(w.hashrate_hs)}</td>
           <td><button type="button" class="worker-plus" data-udetail="${wid}" title="Show work + est. next">+</button></td>
@@ -2400,7 +3774,95 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
   location.href = "/address?a=" + encodeURIComponent(a);
 });
 
+/**
+ * Click-to-pin tooltips for miner status / gateway badges.
+ * Native title= tips disappear when you press PrintScreen or open Snipping Tool —
+ * click the dot/✓/⚠ once to pin a bubble, click again / outside / Esc to dismiss.
+ */
+function wireTipPins() {
+  let bubble = null;
+  let pinnedEl = null;
+
+  function hide() {
+    if (bubble) {
+      bubble.remove();
+      bubble = null;
+    }
+    if (pinnedEl) {
+      pinnedEl.classList.remove("tip-pinned");
+      pinnedEl = null;
+    }
+  }
+
+  function place(el) {
+    if (!bubble || !el) return;
+    const r = el.getBoundingClientRect();
+    const pad = 8;
+    const bw = bubble.offsetWidth || 240;
+    const bh = bubble.offsetHeight || 40;
+    let left = r.left + r.width / 2 - bw / 2;
+    let top = r.top - bh - pad;
+    if (top < pad) top = r.bottom + pad;
+    left = Math.max(pad, Math.min(left, window.innerWidth - bw - pad));
+    bubble.style.left = `${Math.round(left)}px`;
+    bubble.style.top = `${Math.round(top)}px`;
+  }
+
+  function show(el) {
+    const tip = (el.getAttribute("data-tip") || "").trim();
+    if (!tip) return;
+    hide();
+    bubble = document.createElement("div");
+    bubble.className = "tip-bubble tip-bubble-pinned";
+    bubble.setAttribute("role", "tooltip");
+    bubble.textContent = tip;
+    document.body.appendChild(bubble);
+    place(el);
+    pinnedEl = el;
+    el.classList.add("tip-pinned");
+  }
+
+  document.addEventListener(
+    "click",
+    (ev) => {
+      const el = ev.target && ev.target.closest && ev.target.closest(".tip-pin");
+      if (el) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (pinnedEl === el) hide();
+        else show(el);
+        return;
+      }
+      if (pinnedEl && !(ev.target && ev.target.closest && ev.target.closest(".tip-bubble"))) {
+        hide();
+      }
+    },
+    true
+  );
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && pinnedEl) hide();
+    if ((ev.key === "Enter" || ev.key === " ") && ev.target && ev.target.classList && ev.target.classList.contains("tip-pin")) {
+      ev.preventDefault();
+      if (pinnedEl === ev.target) hide();
+      else show(ev.target);
+    }
+  });
+
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (pinnedEl) place(pinnedEl);
+    },
+    true
+  );
+  window.addEventListener("resize", () => {
+    if (pinnedEl) place(pinnedEl);
+  });
+}
+
 (async function main() {
+  wireTipPins();
   const a = qs("a");
   const path = (location.pathname || "/").replace(/\/+$/, "") || "/";
   const onBlocks = path === "/blocks";
@@ -2415,15 +3877,7 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
     if (addr) loadUserChart(addr, r).catch((e) => console.error(e));
   });
 
-  // Always try coinbaser first / standalone so the payout table cannot stick on Loading.
-  if (!a && !onBlocks) {
-    try {
-      renderCoinbaser(await jget("/api/coinbaser"));
-    } catch (e) {
-      console.error("coinbaser bootstrap", e);
-      renderCoinbaser(null);
-    }
-  }
+  // Coinbaser paints inside loadPool (parallel with stats/contrib). No serial wait.
   try {
     if (onBlocks) await loadBlocksPage();
     else if (a) await loadUser(a);
@@ -2439,7 +3893,6 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
   refreshHealthStrip().catch((e) => console.error("health", e));
 
   // Soft 60s refresh for the active dashboard view (paused when tab hidden).
-  // Was 30s — web CPU spiked under multi-tab load; cache layer next.
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
     refreshHealthStrip().catch((e) => console.error("health", e));
@@ -2452,4 +3905,12 @@ document.getElementById("lookup").addEventListener("submit", (e) => {
       loadPool().catch((e) => console.error("refresh pool", e));
     }
   }, 60000);
+
+  // Watch for new pool finds → trigger snapshot rebuild + reload (cards/blocks already live).
+  setInterval(() => {
+    pollForNewFinds().catch((e) => console.error("find watch", e));
+  }, FIND_WATCH_MS);
+  setTimeout(() => {
+    pollForNewFinds().catch((e) => console.error("find watch", e));
+  }, 3000);
 })();

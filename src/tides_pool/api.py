@@ -25,6 +25,28 @@ from tides_pool.datum_prime import start_datum_prime
 # Diff1 hashes (same convention as share / pool hashrate math). Never expose RPC.
 _DIFF1_HASHES = float(1 << 32)
 
+
+def period_luck_pct(*, find_diffs: list[float], pool_work: int) -> float | None:
+    """Luck% with changing network difficulty.
+
+    Each find contributes its stored network difficulty (Diff1 units). Expected
+    work for those finds is Σ(D_i); luck = 100 * Σ(D_i) / pool_share_work.
+    100 = expected. None when no share work in the period.
+    """
+    w = int(pool_work or 0)
+    if w <= 0:
+        return None
+    score = 0.0
+    for d in find_diffs or []:
+        try:
+            dv = float(d or 0)
+        except (TypeError, ValueError):
+            continue
+        if dv > 0:
+            score += dv
+    return round(100.0 * score / float(w), 1)
+
+
 from tides_pool.models import (
     BlockOut,
     CoinbaseOutput,
@@ -132,6 +154,7 @@ _dash_cache = _TtlCache()
 _STATS_TTL_SEC = 15.0
 _CONTRIB_TTL_SEC = 20.0
 _CHART_POOL_TTL_SEC = 30.0
+_BLOCKS_TTL_SEC = 20.0
 
 
 @asynccontextmanager
@@ -237,7 +260,12 @@ async def lifespan(_app: FastAPI):
                     _CHART_POOL_TTL_SEC,
                     lambda: _charts_pool_uncached("24h"),
                 )
-                log.info("dash cache warmed (stats / contributors / charts)")
+                await _dash_cache.get_or_set(
+                    "blocks:8",
+                    _BLOCKS_TTL_SEC,
+                    lambda: _blocks_uncached(8),
+                )
+                log.info("dash cache warmed (stats / contributors / charts / blocks)")
             except Exception as exc:  # noqa: BLE001
                 log.warning("dash cache warm failed: %s", exc)
 
@@ -388,6 +416,54 @@ async def _blocks_last_24h() -> tuple[int, int]:
     return await _blocks_since(24, limit=100)
 
 
+async def _find_diffs_since(hours: float | None, *, limit: int = 5000) -> list[float]:
+    """Network difficulties of non-orphan finds in the last `hours` (None = all)."""
+    cutoff = None
+    if hours is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=float(hours))
+    out: list[float] = []
+    for b in await store.list_blocks(limit=limit):
+        if str(b.block_hash).startswith("lab-"):
+            continue
+        st = getattr(b, "status", None) or "confirmed"
+        if st in ("orphaned", "misattributed"):
+            continue
+        if cutoff is not None:
+            ts = b.accounted_at
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts < cutoff:
+                break
+        try:
+            d = float(getattr(b, "difficulty", 0) or 0)
+        except (TypeError, ValueError):
+            d = 0.0
+        if d > 0:
+            out.append(d)
+    return out
+
+
+
+async def _blocks_all_time(*, limit: int = 5000) -> tuple[int, int]:
+    """Return (confirmed_or_pending, orphaned) finds across all accounted history.
+
+    Skips lab-* hashes. Orphans/misattributed are excluded from the main count.
+    """
+    good = 0
+    orphans = 0
+    for b in await store.list_blocks(limit=limit):
+        if str(b.block_hash).startswith("lab-"):
+            continue
+        st = getattr(b, "status", None) or "confirmed"
+        if st in ("orphaned", "misattributed"):
+            orphans += 1
+        else:
+            good += 1
+    return good, orphans
+
+
 def _fmt_btc_html(sats: int) -> str:
     """User-facing amounts are always BTC (trim trailing zeros)."""
     n = int(sats or 0)
@@ -422,13 +498,13 @@ async def index() -> HTMLResponse:
     import re as _re
     html = _re.sub(
         r'src="/static/app\.js(?:\?v=[^"]*)?"',
-        'src="/static/app.js?v=20260905bonus3"',
+        'src="/static/app.js?v=20260909pieLabel4"',
         html,
         count=1,
     )
     html = _re.sub(
         r'href="/static/style\.css(?:\?v=[^"]*)?"',
-        'href="/static/style.css?v=20260905bonus3"',
+        'href="/static/style.css?v=20260907sv1fee1"',
         html,
         count=1,
     )
@@ -649,7 +725,7 @@ async def health() -> HealthResponse:
         warnings.append(f"coinbaser_outs1_rate:{outs1}/{recent_n}")
 
     p99 = cb.get("p99_reply_ms")
-    if p99 is not None and float(p99) >= 2000.0:
+    if p99 is not None and float(p99) >= 3000.0:
         if status != "down":
             status = "degraded"
         warnings.append(f"coinbaser_p99_ms:{p99}")
@@ -728,6 +804,7 @@ async def _stats_uncached() -> PoolStats:
     ocean_target = window_size(diff, settings.window_blocks)
     blocks_24h, orphans_24h = await _blocks_since(24, limit=200)
     blocks_7d, orphans_7d = await _blocks_since(24 * 7, limit=500)
+    blocks_all, orphans_all = await _blocks_all_time(limit=5000)
     last_h, last_at = await _last_pool_find()
     age_sec: int | None = None
     if last_at is not None:
@@ -766,6 +843,16 @@ async def _stats_uncached() -> PoolStats:
     window_luck: float | None = None
     if filled > 0 and diff > 0 and luck_finds > 0:
         window_luck = round(100.0 * luck_finds * float(diff) / float(filled), 2)
+    # Period luck (24h / 7d / all): Σ(find network diffs) / share-work in period.
+    work_24h = await store.sum_work_since(24 * 3600)
+    work_7d = await store.sum_work_since(7 * 24 * 3600)
+    work_all = await store.total_work()
+    diffs_24h = await _find_diffs_since(24, limit=500)
+    diffs_7d = await _find_diffs_since(24 * 7, limit=2000)
+    diffs_all = await _find_diffs_since(None, limit=5000)
+    luck_24h = period_luck_pct(find_diffs=diffs_24h, pool_work=work_24h)
+    luck_7d = period_luck_pct(find_diffs=diffs_7d, pool_work=work_7d)
+    luck_all = period_luck_pct(find_diffs=diffs_all, pool_work=work_all)
     return PoolStats(
         share_log_work=await store.total_work(),
         share_count=await store.share_count(),
@@ -779,6 +866,11 @@ async def _stats_uncached() -> PoolStats:
         orphans_last_24h=orphans_24h,
         blocks_last_7d=blocks_7d,
         orphans_last_7d=orphans_7d,
+        blocks_all_time=blocks_all,
+        orphans_all_time=orphans_all,
+        luck_24h_pct=luck_24h,
+        luck_7d_pct=luck_7d,
+        luck_all_pct=luck_all,
         chain_height=chain_h,
         block_difficulty=diff,
         reward_estimate_sats=reward_est,
@@ -856,6 +948,7 @@ async def _contributors_uncached(limit: int) -> list[Contributor]:
         hashrate_window_sec=hr_window,
         current_since_seq=current_since,
         confirmed_heads=confirmed_heads,
+        cutoff_seq=cutoff,
     )[:limit]
     addrs = [r["address"] for r in rows]
     qmap = await store.list_quarantines(addrs)
@@ -886,6 +979,16 @@ async def _contributors_uncached(limit: int) -> list[Contributor]:
                 sats_by_addr[o.address] = int(o.sats or 0)
     except Exception as exc:  # noqa: BLE001
         log.warning("contrib coinbaser sats attach failed: %s", exc)
+    # Hourly sticky coinbase-type health (type-2 truncate risk).
+    cb_type_by: dict = {}
+    try:
+        raw_cb = await store.get_meta("cb_type_status_v1")
+        if raw_cb:
+            blob = json.loads(raw_cb) if isinstance(raw_cb, str) else raw_cb
+            if isinstance(blob, dict):
+                cb_type_by = blob.get("by_address") or {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("contrib cb_type_status attach failed: %s", exc)
     out: list[Contributor] = []
     for r in rows:
         q = qmap.get(r["address"])
@@ -898,6 +1001,27 @@ async def _contributors_uncached(limit: int) -> list[Contributor]:
         workers = _worker_breaks_for_addr(
             addr, wbreak, sats_total=sats_by_addr.get(addr)
         )
+        # Path split for UI sections (fee workers ignored).
+        fee_names = {"STRATUM FEE", "OPERATION FEE", "OPS"}
+        sv1_w = 0
+        datum_w = 0
+        for wb in workers:
+            wn = (wb.worker or "").strip().upper()
+            if wn in fee_names or wn.startswith("OPS"):
+                continue
+            ct = (wb.connection_type or "").lower()
+            if ct == "sv1":
+                sv1_w += int(wb.work or 0)
+            elif ct == "datum":
+                datum_w += int(wb.work or 0)
+            else:
+                # Legacy untyped shares: nick Stratum Endpoint → sv1 else datum.
+                nick = (nmap.get(addr) or "").strip().lower()
+                if nick == "stratum endpoint":
+                    sv1_w += int(wb.work or 0)
+                else:
+                    datum_w += int(wb.work or 0)
+        st = cb_type_by.get(addr) if isinstance(cb_type_by.get(addr), dict) else None
         out.append(
             Contributor(
                 **r,
@@ -907,6 +1031,10 @@ async def _contributors_uncached(limit: int) -> list[Contributor]:
                 luck_pct=luck,
                 luck_finds=n_finds,
                 workers=workers,
+                sv1_work=sv1_w,
+                datum_work=datum_w,
+                cb_type_status=(st or {}).get("status"),
+                cb_type_tip=(st or {}).get("tip"),
             )
         )
     return out
@@ -1006,7 +1134,13 @@ def _fill_hs_series(
     end: datetime,
     bucket_sec: int,
 ) -> list[dict]:
-    """Dense series (zeros for empty buckets) so the chart x-axis is even."""
+    """Dense series (zeros for empty buckets) so the chart x-axis is even.
+
+    Complete buckets use full ``bucket_sec``. The in-progress tip bucket is
+    appended as an *estimate* (``estimated: true``): hashrate from work/elapsed,
+    lightly blended toward the previous complete rate so a half-built bucket
+    does not look like a sudden crash (or spike).
+    """
     bsec = max(int(bucket_sec), 1)
     by_ts = {
         int(ts.timestamp()) // bsec * bsec: int(work)
@@ -1014,6 +1148,7 @@ def _fill_hs_series(
     }
     start_i = int(start.timestamp()) // bsec * bsec
     end_i = int(end.timestamp()) // bsec * bsec
+    now_ts = float(end.timestamp())
     out: list[dict] = []
     t = start_i
     while t < end_i:
@@ -1025,6 +1160,31 @@ def _fill_hs_series(
             }
         )
         t += bsec
+    # In-progress bucket [end_i, end_i+bsec) — still building.
+    elapsed = max(1.0, now_ts - float(end_i))
+    if elapsed < bsec and end_i >= start_i:
+        work = int(by_ts.get(end_i, 0) or 0)
+        raw = estimate_hashrate_hs(work, elapsed)
+        prev = float(out[-1]["hs"]) if out else 0.0
+        frac = min(1.0, elapsed / float(bsec))
+        # Early in the bucket lean on previous; as it fills, trust raw more.
+        # Clamp deviation so noise cannot yank the tip too hard.
+        if prev > 0:
+            blend = prev * (1.0 - 0.65 * frac) + raw * (0.65 * frac)
+            max_dev = 0.12 + 0.38 * frac  # ~12% early → ~50% near full
+            lo, hi = prev * (1.0 - max_dev), prev * (1.0 + max_dev)
+            est = min(hi, max(lo, blend))
+        else:
+            est = raw
+        out.append(
+            {
+                "t": end_i,
+                "hs": float(est),
+                "estimated": True,
+                "partial_sec": int(elapsed),
+                "raw_hs": float(raw),
+            }
+        )
     return out
 
 
@@ -1055,13 +1215,19 @@ async def _network_hs_series(
         out: list[dict] = []
         last_hs = float(samples[0][1])
         first_b = int(samples[0][0].timestamp()) // bsec * bsec
+        now_ts = float(end.timestamp())
         t = start_i
         while t <= end_i:
             if t in by_bucket:
                 last_hs = by_bucket[t]
             # Before first sample: leave 0 so the line starts when tracking began.
             hs = last_hs if t >= first_b else 0.0
-            out.append({"t": t, "hs": hs})
+            pt = {"t": t, "hs": hs}
+            # Tip bucket still open — mark estimated so UI can dash the last segment.
+            if t == end_i and (now_ts - float(end_i)) < bsec:
+                pt["estimated"] = True
+                pt["partial_sec"] = int(max(1.0, now_ts - float(end_i)))
+            out.append(pt)
             t += bsec
         return out, "samples"
 
@@ -1239,7 +1405,19 @@ async def charts_user(address: str, range: str = Query("24h")) -> dict:
 
 
 @app.get("/api/blocks", response_model=list[BlockOut])
-async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
+async def blocks(
+    response: Response, limit: int = Query(20, ge=1, le=100)
+) -> list[BlockOut]:
+    # Soft UI polls this every 60s (often limit=8); was ~0.5s uncached and
+    # not covered by the dash TTL cache — main contributor to "sluggish" feel.
+    response.headers["Cache-Control"] = f"public, max-age={int(_BLOCKS_TTL_SEC)}"
+    key = f"blocks:{int(limit)}"
+    return await _dash_cache.get_or_set(
+        key, _BLOCKS_TTL_SEC, lambda: _blocks_uncached(limit)
+    )
+
+
+async def _blocks_uncached(limit: int) -> list[BlockOut]:
     rows = await store.list_blocks(limit=limit * 3)
     # Hide synthetic hashes (lab-/pool- placeholders) from the public site
     real = [
@@ -1251,6 +1429,14 @@ async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
     nmap = await store.nicknames_for_addresses(
         [b.finder_address for b in real if b.finder_address]
     )
+    adj_by_h: dict[int, dict | list] = {}
+    for b in real:
+        try:
+            raw_adj = await store.get_meta(f"manual_adjustment_{int(b.height)}")
+            if raw_adj:
+                adj_by_h[int(b.height)] = json.loads(raw_adj)
+        except Exception:  # noqa: BLE001
+            pass
     out: list[BlockOut] = []
     for b in real:
         intended = None
@@ -1279,78 +1465,56 @@ async def blocks(limit: int = Query(20, ge=1, le=100)) -> list[BlockOut]:
                 payout_mode=getattr(b, "payout_mode", None) or "onchain_split",
                 manual_payout_done=bool(getattr(b, "manual_payout_done", False)),
                 manual_payout_note=getattr(b, "manual_payout_note", None),
+                manual_adjustment=adj_by_h.get(int(b.height)),
                 intended_payout=intended,
             )
         )
     return out
 
 
-async def _lifetime_tides_share_lines(address: str) -> list[UserPayoutOut]:
-    """Replay each confirmed find's coinbaser window; return this address's TIDES lines.
+async def _ledger_payout_lines(address: str) -> list[UserPayoutOut]:
+    """Settlement lines from miner_payouts ledger (coinbase / sendmany / pending owed)."""
+    from tides_pool.miner_payouts import pick_display_rows
 
-    Window at find H = shares with cutoff_seq < seq <= share_head_seq(H), where
-    cutoff is the Nth-last confirmed find *before* H (same rule as live payouts).
-    """
-    confirmed = await store.list_confirmed_blocks(limit=500)
-    if not confirmed:
+    raw = await store.list_miner_payouts_for_address(address, limit=500)
+    rows = pick_display_rows(raw)
+    if not rows:
         return []
-    # oldest → newest
-    blocks = list(reversed(confirmed))
-    shares = await store.list_shares_newest(limit=200_000)
-    n = max(int(settings.window_blocks or 8), 1)
-    miner_bps = miner_reward_bps(settings)
+    heights = {int(r.height) for r in rows}
+    by_h: dict[int, Any] = {}
+    for b in await store.list_blocks(limit=500):
+        if int(b.height) in heights:
+            by_h[int(b.height)] = b
+    for h in heights:
+        if h not in by_h:
+            try:
+                b = await store.get_block(h)
+            except Exception:  # noqa: BLE001
+                b = None
+            if b is not None:
+                by_h[h] = b
     out: list[UserPayoutOut] = []
-    for i, b in enumerate(blocks):
-        if str(b.block_hash).startswith(("lab-", "pool-")):
-            continue
-        before = blocks[:i]
-        if len(before) >= n:
-            cut_blk = before[-n]
-            cutoff_seq = (
-                int(cut_blk.share_head_seq)
-                if cut_blk.share_head_seq is not None
-                else 0
-            )
+    for r in rows:
+        blk = by_h.get(int(r.height))
+        if r.status == "paid":
+            status = (blk.status if blk else None) or "confirmed"
         else:
-            cutoff_seq = None
-        head = b.share_head_seq
-        window = []
-        for s in shares:
-            if head is not None and s.seq > int(head):
-                continue
-            if cutoff_seq is not None and s.seq <= int(cutoff_seq):
-                continue
-            window.append(s)
-        if not window:
-            continue
-        tides = split_reward(
-            window,
-            reward_sats=int(b.reward_sats or 0),
-            block_difficulty=int(b.difficulty or 1),
-            window_blocks=n,
-            miner_bps=miner_bps,
-            pool_ops_address=settings.pool_ops_address or "",
-            cutoff_seq=None,  # already filtered
-            window_mode="pool_finds",
+            status = "unpaid"
+        kind = r.kind if r.kind not in ("mixed",) else "tides"
+        out.append(
+            UserPayoutOut(
+                height=int(r.height),
+                block_hash=blk.block_hash if blk else None,
+                kind=kind if kind != "finder" else "tides",
+                sats=int(r.sats),
+                status=status,
+                accounted_at=(r.paid_at or (blk.accounted_at if blk else None)),
+                payout_mode=(getattr(blk, "payout_mode", None) or "onchain_split") if blk else None,
+                manual_payout_done=bool(getattr(blk, "manual_payout_done", False)) if blk else False,
+                manual_payout_note=getattr(blk, "manual_payout_note", None) if blk else None,
+            )
         )
-        for ln in tides.lines:
-            if ln.address == address:
-                out.append(
-                    UserPayoutOut(
-                        height=int(b.height),
-                        block_hash=b.block_hash,
-                        kind="tides",
-                        sats=int(ln.sats),
-                        status=b.status or "confirmed",
-                        accounted_at=b.accounted_at,
-                    )
-                )
-                break
     return out
-
-
-async def _lifetime_tides_share_sats(address: str) -> int:
-    return sum(p.sats for p in await _lifetime_tides_share_lines(address))
 
 
 @app.get("/user/{address}", response_model=UserStats)
@@ -1373,6 +1537,45 @@ async def user_stats(address: str) -> UserStats:
         log.warning("user est_next from coinbaser failed: %s", exc)
         miner_budget = (await _reward_estimate()) * miner_reward_bps(settings) // 10_000
         est = miner_budget * work // total
+    # Vesting: how many block-periods in the window this address has shares in
+    # (same math as contributors "% Blocks w Shares").
+    window_eras = 0
+    eras_with_work = 0
+    eras_with_work_pct = 0.0
+    try:
+        n_win = max(int(settings.window_blocks or 8), 1)
+        confirmed = await store.list_confirmed_blocks(limit=n_win)
+        current_since = None
+        if confirmed and confirmed[0].share_head_seq is not None:
+            current_since = int(confirmed[0].share_head_seq)
+        confirmed_heads = [
+            (int(b.height), int(b.share_head_seq))
+            for b in confirmed
+            if b.share_head_seq is not None
+        ]
+        crow = next(
+            (
+                r
+                for r in contributor_rows(
+                    window,
+                    recent=None,
+                    hashrate_window_sec=600,
+                    current_since_seq=current_since,
+                    confirmed_heads=confirmed_heads,
+                    cutoff_seq=_cutoff,
+                )
+                if r.get("address") == address
+            ),
+            None,
+        )
+        if crow:
+            window_eras = int(crow.get("window_eras") or 0)
+            eras_with_work = int(crow.get("eras_with_work") or 0)
+            eras_with_work_pct = float(crow.get("eras_with_work_pct") or 0.0)
+        elif confirmed_heads:
+            window_eras = max(len(confirmed_heads), 1)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("user eras_with_work failed: %s", exc)
     finder, credit = await store.pending_finder_credit()
     pending = credit if finder == address else 0
     recent = await store.list_shares_for_address(address, limit=100)
@@ -1385,11 +1588,23 @@ async def user_stats(address: str) -> UserStats:
     )
     q = await store.get_quarantine(address)
     rej, attempts = await store.recent_attempt_stats(address, limit=20)
-    paid_finder, unpaid_finder = await store.finder_credit_totals(address)
-    # Unpaid = open finder bonuses only (est. next tides share is a separate card).
-    tides_earned = await _lifetime_tides_share_sats(address)
-    total_earned = int(tides_earned) + int(paid_finder)
-    unpaid_pending = int(unpaid_finder)
+    _paid_finder, unpaid_finder = await store.finder_credit_totals(address)
+    # Total paid = settlement ledger only (coinbase / sendmany). Finder bonus is
+    # already inside on-chain/sendmany amounts when paid — do not add again.
+    total_earned = int(await store.sum_miner_payouts_paid(address))
+    # Unpaid = open finder bonuses + pending ledger owed (ops_manual not yet sent).
+    pending_ledger = 0
+    try:
+        from tides_pool.miner_payouts import pick_display_rows
+
+        for r in pick_display_rows(
+            await store.list_miner_payouts_for_address(address, limit=500)
+        ):
+            if r.status == "pending":
+                pending_ledger += int(r.sats)
+    except Exception:  # noqa: BLE001
+        pending_ledger = 0
+    unpaid_pending = int(unpaid_finder) + int(pending_ledger)
     # Latest find by this address (as block finder), newest first.
     last_find_height = None
     last_find_at = None
@@ -1430,6 +1645,9 @@ async def user_stats(address: str) -> UserStats:
         last_find_height=last_find_height,
         last_find_at=last_find_at,
         last_find_age_sec=last_find_age_sec,
+        window_eras=window_eras,
+        eras_with_work=eras_with_work,
+        eras_with_work_pct=eras_with_work_pct,
     )
 
 
@@ -1458,8 +1676,8 @@ async def user_payouts(
     address: str,
     limit: int = Query(100, ge=1, le=500),
 ) -> list[UserPayoutOut]:
-    """Reconstructed coinbase credits: TIDES share lines + finder bonuses."""
-    tides = await _lifetime_tides_share_lines(address)
+    """Actual settlements: coinbase / sendmany ledger + unpaid finder bonuses."""
+    tides = await _ledger_payout_lines(address)
     # Map height → block meta for finder rows
     confirmed = await store.list_confirmed_blocks(limit=500)
     by_h = {int(b.height): b for b in confirmed}
@@ -1468,21 +1686,29 @@ async def user_payouts(
     for b in recent:
         by_h.setdefault(int(b.height), b)
 
+    # Only show *unpaid* finder credits — paid finder is already in the coinbase/
+    # sendmany settlement row for the paying height (avoid double-count in UI).
     finder_rows: list[UserPayoutOut] = []
     for from_h, sats, paid_h in await store.list_finder_credits_for_address(
         address, limit=limit
     ):
+        if paid_h is not None:
+            continue
+        if int(sats) <= 0:
+            continue
         blk = by_h.get(int(from_h))
-        status = "unpaid" if paid_h is None else "confirmed"
         finder_rows.append(
             UserPayoutOut(
                 height=int(from_h),
                 block_hash=blk.block_hash if blk else None,
                 kind="finder",
                 sats=int(sats),
-                status=status,
+                status="unpaid",
                 accounted_at=blk.accounted_at if blk else None,
-                paid_in_height=int(paid_h) if paid_h is not None else None,
+                paid_in_height=None,
+                payout_mode=(getattr(blk, "payout_mode", None) or "onchain_split") if blk else None,
+                manual_payout_done=bool(getattr(blk, "manual_payout_done", False)) if blk else False,
+                manual_payout_note=getattr(blk, "manual_payout_note", None) if blk else None,
             )
         )
 
@@ -1495,7 +1721,32 @@ async def user_payouts(
         ),
         reverse=True,
     )
-    return merged[:limit]
+    out = merged[:limit]
+    # Overlay expandable manual-adj tables (same meta as /api/blocks).
+    heights = sorted({int(p.height) for p in out})
+    adj_by: dict[int, object] = {}
+    for h in heights:
+        try:
+            raw = await store.get_meta(f"manual_adjustment_{h}")
+        except Exception:  # noqa: BLE001
+            raw = None
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            try:
+                import json as _json
+
+                raw = _json.loads(raw)
+            except Exception:  # noqa: BLE001
+                continue
+        if isinstance(raw, dict):
+            adj_by[h] = raw
+    if adj_by:
+        for p in out:
+            adj = adj_by.get(int(p.height))
+            if adj is not None:
+                p.manual_adjustment = adj  # type: ignore[assignment]
+    return out
 
 
 def _display_worker(address: str, worker: str | None) -> str:
@@ -1539,6 +1790,13 @@ def _worker_breaks_for_addr(
         sats = None
         if sats_total is not None and sats_total > 0:
             sats = int(sats_total) * w // addr_work
+        ctype = r.get("connection_type")
+        if isinstance(ctype, str):
+            ctype = ctype.strip().lower() or None
+        else:
+            ctype = None
+        if ctype not in (None, "sv1", "datum"):
+            ctype = None
         out.append(
             WorkerBreak(
                 worker=label,
@@ -1547,6 +1805,7 @@ def _worker_breaks_for_addr(
                 share_pct=round(100.0 * w / addr_work, 4),
                 hashrate_hs=float(r.get("hashrate_hs") or 0.0),
                 sats=sats,
+                connection_type=ctype,
             )
         )
     return out
@@ -1787,6 +2046,8 @@ async def info(request: Request) -> dict:
         "lab_http_enabled": _ALLOW_LAB_HTTP,
         "ui": str(request.base_url),
         "datum_prime_port": settings.datum_prime_port,
+        # Quiet ABW test port (same Prime/DB). Not advertised in join — ops-only.
+        "abw_prime_port": int(getattr(settings, "abw_prime_port", 0) or 0) or None,
         "pool_host_hint": "tides.maveth.ca",
         "pool_port": settings.datum_prime_port,
         "pool_pubkey": _pool_pubkey_hex,
@@ -1797,7 +2058,7 @@ async def info(request: Request) -> dict:
             "pool_port": settings.datum_prime_port,
             "pool_pubkey": _pool_pubkey_hex,
             "pool_pubkey_optional_if_autofetch": True,
-            "note": "REQUIRED: run your own Knots Blake node and point DATUM bitcoind RPC at it — without that, DATUM stays not ready even if Prime connects. Prefer Leo StartOS pow_0.4.1_18+ / Umbrel Bitcoin-store DATUM (blake2b); experimental MaVeTh pow_0.4.1_20 also works. Then point DATUM pool_host here (miners → your DATUM Stratum, not :28916). Paste pool_pubkey if your build does not auto-fetch. Set mining.pool_address to your mainnet bc1…/1… payout.",
+            "note": "REQUIRED: run your own Knots Blake node and point DATUM bitcoind RPC at it — without that, DATUM stays not ready even if Prime connects. Prefer Leo StartOS pow_0.4.1_23 / Umbrel Retropex Bitcoin-store DATUM blake2b (PR#10, githash 7491a509…). Source: MaVeTh convoy-pr10. Then point DATUM pool_host here (miners → your DATUM Stratum, not :28916). Paste pool_pubkey if your build does not auto-fetch. Set mining.pool_address to your mainnet bc1…/1… payout.",
         },
     }
 

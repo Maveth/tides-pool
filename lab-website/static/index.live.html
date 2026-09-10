@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RIPTIDE · Mainnet Blake2b</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260907stratum3" />
+  <link rel="stylesheet" href="/static/style.css?v=20260909finderStar1" />
 </head>
 <body>
   <header class="top">
@@ -52,9 +52,17 @@
       <details class="connect-panel connect-panel-top" id="connectPanel">
         <summary>
           <span class="connect-title">How to connect</span>
-          <span class="connect-hint muted">Preferred: CONVOY + PR #10 from source · StartOS sideload · checklist</span>
+          <span class="connect-hint muted">Preferred: CONVOY + PR #10 source · Leo StartOS / Umbrel packages · checklist · Discord</span>
         </summary>
         <div class="connect-body">
+          <div class="join box" id="communityBox">
+            <h2>Community &amp; help</h2>
+            <p class="muted" style="margin-top:0">
+              Questions, setup help, and pool chat —
+              <a href="https://discord.gg/xq4cCH7dq" target="_blank" rel="noopener">join the Discord</a>.
+            </p>
+          </div>
+
           <div class="alert box" id="reopenNote" role="status">
             <strong>Coinbaser enforcement is on.</strong>
             Multi-out windows reject type-0 / <code>coinbase_id=0</code> shares (reject 27 — no credit).
@@ -92,28 +100,33 @@
               </li>
             </ul>
             <br />
-            <strong>StartOS binaries (same CONVOY + PR&nbsp;#10 Gateway, packaged) — download &amp; sideload:</strong>
+            <strong>Packaged DATUM (Leo / Retropex) — CONVOY + PR&nbsp;#10, githash <code>7491a509…</code>:</strong>
             <ul class="connect-stores">
               <li>
-                <a href="https://github.com/Maveth/datum-gateway-startos/releases/download/pow_0.4.1_23/datum_aarch64.s9pk" target="_blank" rel="noopener"><strong>datum_aarch64.s9pk</strong></a>
-                — Raspberry Pi / ARM Start9 (most users)
+                <strong>StartOS (sideload):</strong>
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/download/pow_0.4.1_23/datum.s9pk" target="_blank" rel="noopener"><strong>datum.s9pk</strong></a>
+                —
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/tag/pow_0.4.1_23" target="_blank" rel="noopener"><code>pow_0.4.1_23</code></a>
+                (universal; “Add PR10 code for more payout outputs”)
               </li>
               <li>
-                <a href="https://github.com/Maveth/datum-gateway-startos/releases/download/pow_0.4.1_23/datum_x86_64.s9pk" target="_blank" rel="noopener"><strong>datum_x86_64.s9pk</strong></a>
-                — Intel / AMD Start9
-              </li>
-              <li>
-                Release notes / checksums:
-                <a href="https://github.com/Maveth/datum-gateway-startos/releases/tag/pow_0.4.1_23" target="_blank" rel="noopener"><code>pow_0.4.1_23</code></a>
-                (<code>#pow:0.4.1:23</code>)
+                <strong>Umbrel (community store):</strong>
+                add
+                <a href="https://github.com/Retropex/Bitcoin-store" target="_blank" rel="noopener">github.com/Retropex/Bitcoin-store</a>
+                then install <strong>DATUM (blake2b)</strong>
+                (<code>btc-datum</code> · <code>v0.4.1-beta-6</code>+ · “Switch to convoy repo with PR10”).
+                Stratum port on that app is typically <code>23339</code> (check Config).
               </li>
             </ul>
-            Prefer <strong>source</strong> (MaVeTh <code>convoy-pr10</code> now; Luke/CONVOY upstream when merged) when you can;
-            StartOS <code>.s9pk</code> is the same CONVOY+PR&nbsp;#10 stack for one-click install.
+            Prefer <strong>source</strong>
+            (<a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">MaVeTh <code>convoy-pr10</code></a>
+            now; Luke/CONVOY upstream when PR&nbsp;#10 merges) when you can;
+            Leo’s StartOS / Umbrel packages are the one-click path with the same PR&nbsp;#10 Gateway
+            (UA will show <code>7491a5099dd5d887a027c812f71de63e0d5986a3</code>).
             <br /><br />
-            <strong>Other packages (not preferred):</strong>
-            various versions exist and may work, but they can have bugs in them. Prefer CONVOY + PR&nbsp;#10 source or
-            <code>pow_0.4.1_23</code> above.
+            <strong>Other packages:</strong>
+            older builds may work but can truncate the split. Prefer MaVeTh source or Leo
+            <code>pow_0.4.1_23</code> / Umbrel store above — not the MaVeTh <code>.s9pk</code> sideloads.
           </div>
 
 <div class="warn box" id="joinCbTypeWarn">
@@ -158,7 +171,11 @@
               <li><strong>Knots:</strong> mainnet · Blake2b · synced · RPC for DATUM.</li>
               <li><strong>DATUM (preferred):</strong> source
                 <a href="https://github.com/Maveth/datum_gateway-convoy/tree/convoy-pr10" target="_blank" rel="noopener">Maveth/datum_gateway-convoy @ convoy-pr10</a>
-                (or StartOS <code>pow_0.4.1_23</code> — same CONVOY+PR&nbsp;#10). When
+                · or Leo packages
+                <a href="https://github.com/Retropex/datum-gateway-startos/releases/tag/pow_0.4.1_23" target="_blank" rel="noopener">StartOS <code>pow_0.4.1_23</code></a>
+                /
+                <a href="https://github.com/Retropex/Bitcoin-store" target="_blank" rel="noopener">Umbrel Bitcoin-store</a>
+                (githash <code>7491a509…</code>). When
                 <a href="https://github.com/CONVOYMining/datum_gateway/pull/10" target="_blank" rel="noopener">PR&nbsp;#10</a>
                 merges, prefer Luke/CONVOY upstream
                 <a href="https://github.com/CONVOYMining/datum_gateway" target="_blank" rel="noopener">CONVOYMining/datum_gateway</a>
@@ -214,15 +231,20 @@
       </div>
 
       <div class="stack-panels">
-        <div>
-          <h2>Contributors</h2>
-          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Payout % = your <strong>work</strong> / window work. <strong>Blocks</strong> = % of those block-periods you appeared in — not the same as payout %. <strong>Total work</strong> is this window only — not lifetime.</p>
+        <details class="connect-panel contrib-panel" id="contribPanel" open>
+          <summary>
+            <span class="connect-title">Contributors</span>
+            <span class="muted connect-hint" id="contribPanelHint">DATUM + Pool SV1 · click to collapse</span>
+          </summary>
+          <div class="connect-body">
+          <p class="muted">Same window as the next block payout: <strong>7 confirmed finds + current</strong> (cutoff = 8th-last confirmed find). Split into <strong>DATUM / own Gateway</strong> (top) then <strong>Pool SV1</strong> (below). Same address can appear in both if it has both paths. Payout % = your <strong>work</strong> / window work. <strong>Ops fee</strong> / <strong>Stratum fee share</strong> are display labels only (backend names unchanged). Each table defaults to <em>hashing now</em> with its own show-all toggle. SV1 pins ops fee at top (unranked) and omits nickname (all Stratum Endpoint).</p>
           <div class="contrib-toolbar muted">
             <div class="activity-legend">
-              <span class="activity-legend-item"><span class="activity-dot live" title="Shares in the last ~10 minutes"></span>hashing now</span>
-              <span class="activity-legend-item"><span class="activity-dot idle" title="Work on this block, but quiet lately"></span>this block, idle</span>
-              <span class="activity-legend-item"><span class="activity-dot offline" title="In window from earlier finds only — no work on this block"></span>no work this block</span>
-              <span class="activity-legend-item" title="See How to connect — CONVOY PR #10 / coinbase class"><span class="cb-type-ico cb-type-ok">✓</span>/<span class="cb-type-ico cb-type-warn">⚠</span> Gateway coinbase class</span>
+              <span class="activity-legend-item"><span class="activity-dot live tip-pin" data-tip="Shares in the last ~10 minutes — click the status dot on a miner row to pin this tip for screenshots" role="button" tabindex="0" aria-label="Hashing now"></span>hashing now</span>
+              <span class="activity-legend-item"><span class="activity-dot idle tip-pin" data-tip="Work on this block, but quiet lately — click the status dot on a miner row to pin this tip for screenshots" role="button" tabindex="0" aria-label="This block, idle"></span>this block, idle</span>
+              <span class="activity-legend-item"><span class="activity-dot offline tip-pin" data-tip="In window from earlier finds only — no work on this block — click the status dot on a miner row to pin this tip for screenshots" role="button" tabindex="0" aria-label="No work this block"></span>no work this block</span>
+              <span class="activity-legend-item"><span class="cb-type-ico cb-type-ok tip-pin" data-tip="Gateway coinbase class OK — click ✓/⚠ on a miner address to pin the full check tip for screenshots. See How to connect — CONVOY PR #10." role="button" tabindex="0" aria-label="Gateway OK">✓</span>/<span class="cb-type-ico cb-type-warn tip-pin" data-tip="Gateway coinbase class warn — click ✓/⚠ on a miner address to pin the full check tip for screenshots. See How to connect — CONVOY PR #10." role="button" tabindex="0" aria-label="Gateway warn">⚠</span> Gateway coinbase class <span class="muted" style="font-size:0.75em">(click to pin tip)</span></span>
+              <span class="activity-legend-item"><span class="nick-src nick-src-none">?</span> no nick · <span class="nick-src nick-src-worker">W</span> worker · <span class="nick-src nick-src-tag">🏷</span> nickname · <span class="nick-src nick-src-finds">🏆N</span> finds in window</span>
             </div>
             <div class="contrib-sort-bar" id="contribSortBar" hidden>
               <label>Group by
@@ -244,6 +266,8 @@
               </label>
             </div>
           </div>
+          <h3 class="contrib-section-h">DATUM — own Gateway <span class="muted contrib-path-tot" id="contribTotDatum"></span></h3>
+          <p class="muted contrib-section-note">No SV1 skim · may receive Stratum fee share when live</p>
           <div class="table-wrap">
             <table>
               <thead>
@@ -253,19 +277,43 @@
                   <th>Address</th>
                   <th title="Last coinbase secondary tag seen when this address found a block">Nickname</th>
                   <th>Shares</th>
-                  <th title="Most recent pool find where this address still had shares. CURRENT = hashing this unfinished block. N ago = last shares were N confirmed finds back (less dilution as they age out).">Last share</th>
-                  <th title="Share of window block-periods you have any shares in (e.g. 50% ≈ 4 of 8). Not payout % — payout is still total work ÷ window work.">Blocks</th>
+                  <th title="Percent of window block-periods where this address had any shares (e.g. 50% ≈ 4 of 8). Not payout % — payout is still total work ÷ window work.">% Blocks w Shares</th>
                   <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
                   <th title="Total work in the payout window only (7 confirmed finds + current) — not lifetime">Total work</th>
                   <th>~H/s</th>
                   <th>Payout %</th>
                 </tr>
               </thead>
-              <tbody id="contribBody"><tr><td colspan="11">Loading…</td></tr></tbody>
+              <tbody id="contribBodyDatum"><tr><td colspan="10">Loading…</td></tr></tbody>
             </table>
           </div>
           <p class="table-more muted" id="contribMore" hidden></p>
-        </div>
+
+          <h3 class="contrib-section-h">Pool SV1 — Stratum Endpoint <span class="muted contrib-path-tot" id="contribTotSv1"></span></h3>
+          <p class="muted contrib-section-note">Skimmed path · own ranking · ops fee pinned at top (unranked) · nickname omitted (all Stratum Endpoint)</p>
+          <p class="muted contrib-section-note" style="color:#fbbf24">⚠ If your SV1 stratum username is not a real BTC payout address, you will <strong>not</strong> get paid (shares rejected — payout goes nowhere, not to ops). Use <code>bc1….worker</code> (or <code>1…/3…</code>).</p>
+          <div id="sv1BadAuthWarn" class="sv1-bad-auth" hidden></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>#</th>
+                  <th>Address</th>
+                  <th>Shares</th>
+                  <th title="Percent of window block-periods where this address had any shares (e.g. 50% ≈ 4 of 8). Not payout % — payout is still total work ÷ window work.">% Blocks w Shares</th>
+                  <th title="Work toward the unfinished current find (since last confirmed pool block)">This block</th>
+                  <th title="Total work in the payout window only (7 confirmed finds + current) — not lifetime">Total work</th>
+                  <th>~H/s</th>
+                  <th>Payout %</th>
+                </tr>
+              </thead>
+              <tbody id="contribBodySv1"><tr><td colspan="9">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <p class="table-more muted" id="contribMoreSv1" hidden></p>
+          </div>
+        </details>
         <div class="recent-blocks-panel">
           <h2>Recent pool blocks <span class="muted" style="font-weight:400;font-size:0.9rem">(last 8 · orphans shown in red)</span></h2>
           <div class="table-wrap">
@@ -274,7 +322,7 @@
                 <tr>
                   <th>Height</th>
                   <th>Status</th>
-                  <th title="Stratum worker that submitted the block share">Worker</th>
+                  <th title="★ Machine (stratum worker) that found the block — DATUM or SV1">★ Worker</th>
                   <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
                   <th>Address</th>
                   <th>Reward</th>
@@ -302,7 +350,7 @@
             <tr>
               <th>Height</th>
               <th>Status</th>
-              <th title="Stratum worker that submitted the block share">Worker</th>
+              <th title="★ Machine (stratum worker) that found the block — DATUM or SV1">★ Worker</th>
               <th title="Coinbase secondary tag at find time (nickname)">Nickname</th>
               <th>Address</th>
               <th>Reward</th>
@@ -320,6 +368,21 @@
       <p class="muted" id="userSubtitle">Miner dashboard</p>
       <h1 id="userTitle">Address</h1>
       <div class="cards" id="userCards">Loading…</div>
+
+      <div class="box dashboard-panel" id="userChartBox">
+        <div class="chart-head">
+          <h2>Your hashrate</h2>
+          <div class="chart-ranges" id="userChartRanges" role="group" aria-label="Chart range">
+            <button type="button" data-range="1h">1h</button>
+            <button type="button" data-range="24h" class="active">24h</button>
+            <button type="button" data-range="7d">1w</button>
+            <button type="button" data-range="window" title="Payout window (7 confirmed finds + current) — length follows find rate">Window</button>
+          </div>
+        </div>
+        <p class="muted chart-sub">From your accepted shares · axis in TH/s · markers = your finds</p>
+        <div class="worker-chart-filters muted" id="userWorkerFilters" hidden></div>
+        <div class="chart-wrap"><canvas id="userChart" aria-label="Miner hashrate chart"></canvas></div>
+      </div>
 
       <div class="box dashboard-panel" id="userWorkersBox" hidden>
         <h2>Workers</h2>
@@ -339,28 +402,13 @@
         </div>
       </div>
 
-      <div class="box dashboard-panel" id="userChartBox">
-        <div class="chart-head">
-          <h2>Your hashrate</h2>
-          <div class="chart-ranges" id="userChartRanges" role="group" aria-label="Chart range">
-            <button type="button" data-range="1h">1h</button>
-            <button type="button" data-range="24h" class="active">24h</button>
-            <button type="button" data-range="7d">1w</button>
-            <button type="button" data-range="window" title="Payout window (7 confirmed finds + current) — length follows find rate">Window</button>
-          </div>
-        </div>
-        <p class="muted chart-sub">From your accepted shares · axis in TH/s · markers = your finds</p>
-        <div class="worker-chart-filters muted" id="userWorkerFilters" hidden></div>
-        <div class="chart-wrap"><canvas id="userChart" aria-label="Miner hashrate chart"></canvas></div>
-      </div>
-
       <details class="miner-panel" id="payoutHistoryPanel">
         <summary>
           <span class="connect-title">Payout history</span>
-          <span class="muted connect-hint" id="payoutHistoryHint">TIDES share lines · click to expand</span>
+          <span class="muted connect-hint" id="payoutHistoryHint">coinbase / manual payouts · click to expand</span>
         </summary>
         <div class="miner-panel-body">
-          <p class="muted chart-sub">Reconstructed from pool finds (same math as Total earned). Newest first.</p>
+          <p class="muted chart-sub">From real coinbase outs or ops manual payouts (same as Total earned). Newest first.</p>
           <div class="table-wrap">
             <table>
               <thead>
@@ -398,10 +446,11 @@
 
   <footer>
     <span id="footerMeta"></span>
+    · <a href="https://discord.gg/xq4cCH7dq" target="_blank" rel="noopener" title="Community & help">Discord</a>
     · <a href="/docs">API</a>
     · <a href="/health">health</a>
   </footer>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-  <script src="/static/app.js?v=20260907stratum4" defer></script>
+  <script src="/static/app.js?v=20260910contribFold" defer></script>
 </body>
 </html>

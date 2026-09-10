@@ -11,19 +11,33 @@ build/
 .env
 *.log
 .DS_Store
+
+# Runtime / secrets / NAS-only
 data/
 **/postgres-data/
 **/pool_keys.json
 **/config.json
 !**/*.example.json
+!**/*example*.json
 **/*_backup.dat
 **/*.bak
+**/*.bak.*
 O-DRIVE-NOTE.txt
+backups/
+datum-pool-logs/
 deploy/datum-pool/postgres-data/
 deploy/postgres-data/
 deploy/docker-compose.lab.yml
-
-# Runtime snapshot cache (regenerated on NAS)
+tides.db
+**/tides.db
+**/archive-*/
+lab-website/logs/
 lab-website/snapshots/
-
-
+**/static/data/
+*.broken.*
+*.write_test
+src/tides_pool/app.js
+src/tides_pool/index.html
+deploy/PAYOUT_ADDRESS.txt
+deploy/datum-pool-convoy/
+lab-website/static/reports/

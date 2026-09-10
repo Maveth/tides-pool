@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     bitcoin_rpc_password: str = "YOUR_LAB_PASSWORD"
     bitcoin_rpc_timeout: float = 15.0
     chain_sync_seconds: int = 15
+    # Fast tip watcher (Prime): poll Knots best-block hash so coinbaser
+    # invalidates on *every* tip (prevhash changes), not only via the
+    # slow chain_sync_seconds meta loop. 0 = disabled.
+    tip_poll_seconds: float = Field(default=1.0, ge=0.0, le=30.0)
 
     # TIDES / fees (basis points of block reward)
     # window_blocks = how many *confirmed pool finds* keep shares in the payout window.
@@ -50,8 +54,12 @@ class Settings(BaseSettings):
     min_output_sats: int = 1000
     # Dedicated fee-keep address (2.5% of block when finder bonus is active; 5% if no prior finder yet)
     pool_ops_address: str = "mqKdiu6W825MWc31NACiwxRchTb4dP2NRH"
-    coinbase_tag_primary: str = "TIDES"
+    # Primary string stamped into coinbases via DATUM 0x99 configure.
+    coinbase_tag_primary: str = "RIPTIDE"
     coinbase_tag_secondary: str = "MaVeTh"
+    # Comma-separated legacy primaries still accepted for find attribution
+    # (historical coinbases after a rename). Empty = primary only.
+    coinbase_tag_legacy: str = "TIDES"
 
     # Block explorer for Recent pool blocks links (lab mempool UI)
     mempool_explorer_url: str = "https://mempool.maveth.ca"
@@ -83,6 +91,15 @@ class Settings(BaseSettings):
 
     # DATUM Prime listen (encrypted Gateway pool_host protocol)
     datum_prime_port: int = 28916
+    # Quiet second listen port for ABW-on testing (same process + same DB).
+    # 0 = disabled. When set (e.g. 28926), CONVOY UAs on that port get v3-abw-on;
+    # datum_prime_port stays v3-abw-off / v1 exactly as today. Do not advertise.
+    abw_prime_port: int = Field(default=0, ge=0, le=65535)
+    # Global ABW override (lab single-port). Live keeps this False and uses
+    # abw_prime_port instead so :28916 workers are untouched.
+    abw_enable: bool = False
+    # Seconds between ABW reveal (0xA9) + new ACTIVE notice. 0 = no rotation.
+    abw_rotate_seconds: float = Field(default=120.0, ge=0.0, le=3600.0)
     # Cap inbound cmd_len before readexactly (protocol allows ~4MiB → DoS).
     # 256KiB fits share+TLV coinbase/merkle; raise via env if a GW ever needs more.
     datum_max_cmd_len: int = Field(default=262144, ge=4096, le=0x3FFFFF)
@@ -103,10 +120,54 @@ class Settings(BaseSettings):
     # Hot miners (recent reject-27 in ring) are checked every attempt.
     quarantine_check_every_n: int = Field(default=10, ge=1, le=200)
 
-    # Coinbaser split cache: reuse window weights; full reload every N seconds
-    # or on invalidate (new confirmed find / finder credit). Gateway work_update
-    # is separate (DATUM) — do not lower that to fix Prime load.
-    coinbaser_cache_seconds: float = Field(default=15.0, ge=1.0, le=300.0)
+    # Coinbaser: one server-wide calc on this interval; 0x10 serves frozen outs.
+    # Shares between ticks (and after a find) roll into the next calc / next window.
+    coinbaser_cache_seconds: float = Field(default=5.0, ge=1.0, le=300.0)
+
+    # After a new chain tip, Gateways rebuild templates (new prevhash) and often
+    # empty-blast (cid=0) until the next multi-out coinbaser lands. Accept those
+    # non-block empty shares for this many seconds so ASICs keep hashing on the
+    # *new* tip while coinbaser refreshes. Block finds on empty stay ops_manual.
+    r27_new_tip_grace_sec: float = Field(default=45.0, ge=5.0, le=300.0)
+
+    # Local Gateway work skim (NOT global TIDES_FEE_BPS / coinbaser fee).
+    # When peer is a NAS-local DATUM Gateway (host-net → docker-proxy often
+    # 172.16.13.1), credit (10000-bps)% to miner and skim bps% off the top.
+    # Of the skim: local_work_fee_ops_share_bps → OPS (OPERATION FEE) immediately;
+    # the rest accrues in-memory and is flushed on the coinbaser tick as
+    # STRATUM FEE: proportional to *this-block* work among addresses that are
+    # currently live (recent real shares; matches green activity dots).
+    # Remote Gateways keep real public peer IPs and are not skimmed.
+    local_work_fee_bps: int = Field(
+        default=100,
+        ge=0,
+        le=5000,
+        description="Work skim for local GW peers only; 100 = 1%",
+    )
+    local_work_fee_ops_share_bps: int = Field(
+        default=5000,
+        ge=0,
+        le=10000,
+        description="Fraction of the skim that goes to OPS immediately; 5000 = 50%",
+    )
+    local_work_fee_worker: str = Field(
+        default="OPERATION FEE",
+        description="Worker name on ops share rows from local work skim",
+    )
+    local_work_fee_community_worker: str = Field(
+        default="STRATUM FEE",
+        description="Worker name on community half of local work skim (tick flush)",
+    )
+    local_work_fee_community_live_sec: int = Field(
+        default=600,
+        ge=60,
+        le=3600,
+        description="Only addresses with a real share in this many seconds get STRATUM FEE (green/live)",
+    )
+    local_work_fee_peers: str = Field(
+        default="127.0.0.1,::1,172.16.13.1",
+        description="Comma-separated peer IPs that get the local work skim",
+    )
 
     def normalized_role(self) -> str:
         r = (self.role or "all").strip().lower()
@@ -158,6 +219,28 @@ class Settings(BaseSettings):
         if self.share_work_max > 0:
             return int(self.share_work_max)
         return 1 << int(self.share_target_byte_max)
+
+    def local_work_fee_peer_set(self) -> set[str]:
+        raw = self.local_work_fee_peers or ""
+        return {
+            a.strip().lower()
+            for a in raw.replace(";", ",").replace(" ", ",").split(",")
+            if a.strip()
+        }
+
+    def is_local_work_fee_peer(self, peer_ip: str) -> bool:
+        """True if this DATUM peer should get the local work skim."""
+        ip = (peer_ip or "").strip().lower()
+        if not ip:
+            return False
+        if ip.startswith("[") and ip.endswith("]"):
+            ip = ip[1:-1]
+        if ip.startswith("::ffff:"):
+            ip = ip[7:]
+        peers = self.local_work_fee_peer_set()
+        if not peers:
+            peers = {"127.0.0.1", "::1", "172.16.13.1"}
+        return ip in peers
 
 
 

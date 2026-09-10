@@ -10,6 +10,7 @@ from typing import Any
 import asyncpg
 
 from tides_pool.tides import Share
+from tides_pool.miner_payouts import MinerPayoutRow
 
 
 @dataclass
@@ -20,6 +21,7 @@ class ShareRow:
     work: int
     fee_bps: int
     accepted_at: datetime
+    connection_type: str | None = None  # 'sv1' | 'datum' | None (fee/legacy)
 
 
 @dataclass
@@ -55,6 +57,7 @@ class Store(ABC):
         *,
         worker: str | None = None,
         fee_bps: int = 0,
+        connection_type: str | None = None,
     ) -> ShareRow: ...
 
     @abstractmethod
@@ -126,6 +129,9 @@ class Store(ABC):
 
     @abstractmethod
     async def total_work(self) -> int: ...
+    async def sum_work_since(self, since_seconds: int | None) -> int:
+        """Sum share work since now-since_seconds; None = all-time total_work."""
+        ...
 
     @abstractmethod
     async def record_block(
@@ -153,6 +159,7 @@ class Store(ABC):
         intended_payout_json: str | None = None,
         manual_payout_done: bool | None = None,
         manual_payout_note: str | None = None,
+        share_head_seq: int | None = None,
     ) -> None:
         """Update manual/ops payout fields on an existing block row."""
         ...
@@ -164,6 +171,11 @@ class Store(ABC):
 
     @abstractmethod
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]: ...
+
+    @abstractmethod
+    async def get_block(self, height: int) -> BlockRow | None:
+        """Return one block by height, or None."""
+        ...
 
     @abstractmethod
     async def list_blocks_by_status(self, status: str, limit: int = 50) -> list[BlockRow]: ...
@@ -245,6 +257,30 @@ class Store(ABC):
     async def mark_finder_credit_paid(self, credit_id: int, paid_in_height: int) -> int: ...
 
     @abstractmethod
+    async def upsert_miner_payouts(self, rows: list[MinerPayoutRow]) -> int:
+        """Insert/update settlement ledger rows. Returns count written."""
+        ...
+
+    @abstractmethod
+    async def delete_miner_payouts(
+        self, height: int, *, sources: list[str] | None = None
+    ) -> int:
+        """Delete ledger rows for a height (optionally filtered by source)."""
+        ...
+
+    @abstractmethod
+    async def list_miner_payouts_for_address(
+        self, address: str, *, limit: int = 500
+    ) -> list[MinerPayoutRow]:
+        """Return ledger rows for address, newest height first."""
+        ...
+
+    @abstractmethod
+    async def sum_miner_payouts_paid(self, address: str) -> int:
+        """Sum sats for paid ledger rows for this address."""
+        ...
+
+    @abstractmethod
     async def clear_lab_data(self) -> dict: ...
 
 
@@ -303,6 +339,7 @@ class MemoryStore(Store):
         self._blocks: list[BlockRow] = []
         self._meta: dict[str, str] = {}
         self._credits: list[tuple[int, str, int, int | None]] = []  # height, addr, sats, paid
+        self._miner_payouts: list[MinerPayoutRow] = []
         self._attempts: list[dict] = []
         self._quarantine: dict[str, dict] = {}
         self._probation_cleared: set[str] = set()
@@ -320,8 +357,12 @@ class MemoryStore(Store):
         *,
         worker: str | None = None,
         fee_bps: int = 0,
+        connection_type: str | None = None,
     ) -> ShareRow:
         self._seq += 1
+        ct = (connection_type or "").strip().lower() or None
+        if ct not in (None, "sv1", "datum"):
+            ct = None
         row = ShareRow(
             seq=self._seq,
             address=address,
@@ -329,6 +370,7 @@ class MemoryStore(Store):
             work=work,
             fee_bps=fee_bps,
             accepted_at=datetime.now(timezone.utc),
+            connection_type=ct,
         )
         self._shares.append(row)
         return row
@@ -377,10 +419,12 @@ class MemoryStore(Store):
         from collections import defaultdict
 
         want = set(addresses) if addresses else None
-        tallies: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        tallies: dict[str, dict[tuple[str, str], dict[str, int]]] = defaultdict(
             lambda: defaultdict(lambda: {"shares": 0, "work": 0})
         )
-        recent_work: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        recent_work: dict[str, dict[tuple[str, str], int]] = defaultdict(
+            lambda: defaultdict(int)
+        )
         cutoff_ts = datetime.now(timezone.utc).timestamp() - max(int(recent_sec), 0)
         for r in self._shares:
             if r.work < 1:
@@ -390,26 +434,29 @@ class MemoryStore(Store):
             if want is not None and r.address not in want:
                 continue
             wlabel = (r.worker or "").strip() or "(unknown)"
-            tallies[r.address][wlabel]["shares"] += 1
-            tallies[r.address][wlabel]["work"] += int(r.work)
+            ctype = (getattr(r, "connection_type", None) or "")
+            key = (wlabel, ctype)
+            tallies[r.address][key]["shares"] += 1
+            tallies[r.address][key]["work"] += int(r.work)
             ts = (
                 r.accepted_at.timestamp()
                 if r.accepted_at.tzinfo
                 else r.accepted_at.replace(tzinfo=timezone.utc).timestamp()
             )
             if ts >= cutoff_ts:
-                recent_work[r.address][wlabel] += int(r.work)
+                recent_work[r.address][key] += int(r.work)
         out: dict[str, list[dict[str, Any]]] = {}
         for addr, by_w in tallies.items():
             rows = []
-            for wlabel, t in by_w.items():
-                rw = recent_work.get(addr, {}).get(wlabel, 0)
+            for (wlabel, ctype), tall in by_w.items():
+                rw = recent_work.get(addr, {}).get((wlabel, ctype), 0)
                 rows.append(
                     {
                         "worker": wlabel,
-                        "shares": int(t["shares"]),
-                        "work": int(t["work"]),
+                        "shares": int(tall["shares"]),
+                        "work": int(tall["work"]),
                         "hashrate_hs": estimate_hashrate_hs(rw, recent_sec),
+                        "connection_type": ctype or None,
                     }
                 )
             rows.sort(key=lambda x: (-x["work"], x["worker"]))
@@ -491,6 +538,20 @@ class MemoryStore(Store):
     async def total_work(self) -> int:
         return sum(r.work for r in self._shares)
 
+    async def sum_work_since(self, since_seconds: int | None) -> int:
+        if since_seconds is None:
+            return await self.total_work()
+        cutoff = datetime.now(timezone.utc).timestamp() - float(since_seconds)
+        total = 0
+        for r in self._shares:
+            at = r.accepted_at
+            if at is None:
+                continue
+            ts = at.timestamp() if at.tzinfo else at.replace(tzinfo=timezone.utc).timestamp()
+            if ts >= cutoff:
+                total += int(r.work or 0)
+        return total
+
     async def record_block(
         self,
         *,
@@ -551,6 +612,13 @@ class MemoryStore(Store):
         self._blocks.sort(key=lambda b: b.height, reverse=True)
         if status in ("pending", "confirmed"):
             await self.set_meta("last_height", str(height))
+        if keep_snap:
+            from tides_pool.miner_payouts import sync_miner_payouts_for_height
+
+            try:
+                await sync_miner_payouts_for_height(self, int(height))
+            except Exception:  # noqa: BLE001
+                pass
 
     async def set_block_payout_meta(
         self,
@@ -592,6 +660,13 @@ class MemoryStore(Store):
                 ),
             )
             break
+        if intended_payout_json is not None or payout_mode is not None or manual_payout_done:
+            from tides_pool.miner_payouts import sync_miner_payouts_for_height
+
+            try:
+                await sync_miner_payouts_for_height(self, int(height))
+            except Exception:  # noqa: BLE001
+                pass
 
     async def count_manual_payouts_pending(self) -> int:
         return sum(
@@ -604,6 +679,12 @@ class MemoryStore(Store):
 
     async def list_blocks(self, limit: int = 20) -> list[BlockRow]:
         return self._blocks[:limit]
+
+    async def get_block(self, height: int) -> BlockRow | None:
+        for b in self._blocks:
+            if int(b.height) == int(height):
+                return b
+        return None
 
     async def list_blocks_by_status(self, status: str, limit: int = 50) -> list[BlockRow]:
         rows = [b for b in self._blocks if b.status == status]
@@ -741,9 +822,66 @@ class MemoryStore(Store):
 
     async def set_meta(self, key: str, value: str) -> None:
         self._meta[key] = value
+        if key.startswith("manual_adjustment_"):
+            try:
+                h = int(key.rsplit("_", 1)[-1])
+            except ValueError:
+                return
+            from tides_pool.miner_payouts import sync_miner_payouts_for_height
+
+            try:
+                await sync_miner_payouts_for_height(self, h)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def get_meta(self, key: str, default: str | None = None) -> str | None:
         return self._meta.get(key, default)
+
+    async def upsert_miner_payouts(self, rows: list[MinerPayoutRow]) -> int:
+        n = 0
+        for row in rows:
+            replaced = False
+            for i, existing in enumerate(self._miner_payouts):
+                if (
+                    existing.height == row.height
+                    and existing.address == row.address
+                    and existing.source == row.source
+                ):
+                    self._miner_payouts[i] = row
+                    replaced = True
+                    break
+            if not replaced:
+                self._miner_payouts.append(row)
+            n += 1
+        return n
+
+    async def delete_miner_payouts(
+        self, height: int, *, sources: list[str] | None = None
+    ) -> int:
+        before = len(self._miner_payouts)
+        src = set(sources) if sources else None
+        self._miner_payouts = [
+            r
+            for r in self._miner_payouts
+            if not (
+                r.height == int(height) and (src is None or r.source in src)
+            )
+        ]
+        return before - len(self._miner_payouts)
+
+    async def list_miner_payouts_for_address(
+        self, address: str, *, limit: int = 500
+    ) -> list[MinerPayoutRow]:
+        rows = [r for r in self._miner_payouts if r.address == address]
+        rows.sort(key=lambda r: (-r.height, -r.sats))
+        return rows[:limit]
+
+    async def sum_miner_payouts_paid(self, address: str) -> int:
+        return sum(
+            int(r.sats)
+            for r in self._miner_payouts
+            if r.address == address and r.status == "paid"
+        )
 
     async def open_finder_credit(self, height: int, address: str, credit_sats: int) -> None:
         # One credit row per find height (first claimer wins).
@@ -817,6 +955,7 @@ class MemoryStore(Store):
         self._seq = 0
         self._blocks.clear()
         self._credits.clear()
+        self._miner_payouts.clear()
         # keep chain_* meta; drop pool bookkeeping
         for k in ("last_height",):
             self._meta.pop(k, None)
@@ -982,6 +1121,38 @@ class PostgresStore(Store):
             await conn.execute(
                 "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS intended_payout_json TEXT"
             )
+            await conn.execute(
+                "ALTER TABLE shares ADD COLUMN IF NOT EXISTS connection_type TEXT"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS shares_connection_type_idx "
+                "ON shares (connection_type) WHERE connection_type IS NOT NULL"
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS miner_payouts (
+                    id           BIGSERIAL PRIMARY KEY,
+                    height       INT NOT NULL REFERENCES blocks(height) ON DELETE CASCADE,
+                    address      TEXT NOT NULL,
+                    sats         BIGINT NOT NULL CHECK (sats >= 0),
+                    kind         TEXT NOT NULL,
+                    source       TEXT NOT NULL,
+                    status       TEXT NOT NULL,
+                    txid         TEXT,
+                    paid_at      TIMESTAMPTZ,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (height, address, source)
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS miner_payouts_addr_height_idx "
+                "ON miner_payouts (address, height DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS miner_payouts_height_idx "
+                "ON miner_payouts (height)"
+            )
 
     async def close(self) -> None:
         if self._pool:
@@ -1000,7 +1171,11 @@ class PostgresStore(Store):
         *,
         worker: str | None = None,
         fee_bps: int = 0,
+        connection_type: str | None = None,
     ) -> ShareRow:
+        ct = (connection_type or "").strip().lower() or None
+        if ct not in (None, "sv1", "datum"):
+            ct = None
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -1021,14 +1196,15 @@ class PostgresStore(Store):
                     )
                 row = await conn.fetchrow(
                     """
-                    INSERT INTO shares(address, worker, work, fee_bps)
-                    VALUES($1, $2, $3, $4)
-                    RETURNING seq, address, worker, work, fee_bps, accepted_at
+                    INSERT INTO shares(address, worker, work, fee_bps, connection_type)
+                    VALUES($1, $2, $3, $4, $5)
+                    RETURNING seq, address, worker, work, fee_bps, accepted_at, connection_type
                     """,
                     address,
                     worker,
                     work,
                     fee_bps,
+                    ct,
                 )
         return ShareRow(
             seq=row["seq"],
@@ -1037,6 +1213,7 @@ class PostgresStore(Store):
             work=row["work"],
             fee_bps=row["fee_bps"],
             accepted_at=row["accepted_at"],
+            connection_type=row["connection_type"],
         )
 
     async def list_shares_newest(self, limit: int = 10_000) -> list[Share]:
@@ -1139,11 +1316,12 @@ class PostgresStore(Store):
                     """
                     SELECT address,
                            COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COALESCE(connection_type, '') AS connection_type,
                            COUNT(*)::bigint AS shares,
                            COALESCE(SUM(work), 0)::bigint AS work
                     FROM shares
                     WHERE work >= 1 AND address = ANY($1::text[])
-                    GROUP BY 1, 2
+                    GROUP BY 1, 2, 3
                     """,
                     addrs,
                 )
@@ -1152,11 +1330,12 @@ class PostgresStore(Store):
                     """
                     SELECT address,
                            COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COALESCE(connection_type, '') AS connection_type,
                            COUNT(*)::bigint AS shares,
                            COALESCE(SUM(work), 0)::bigint AS work
                     FROM shares
                     WHERE work >= 1
-                    GROUP BY 1, 2
+                    GROUP BY 1, 2, 3
                     """
                 )
         else:
@@ -1165,11 +1344,12 @@ class PostgresStore(Store):
                     """
                     SELECT address,
                            COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COALESCE(connection_type, '') AS connection_type,
                            COUNT(*)::bigint AS shares,
                            COALESCE(SUM(work), 0)::bigint AS work
                     FROM shares
                     WHERE seq > $1 AND work >= 1 AND address = ANY($2::text[])
-                    GROUP BY 1, 2
+                    GROUP BY 1, 2, 3
                     """,
                     int(cutoff_seq),
                     addrs,
@@ -1179,11 +1359,12 @@ class PostgresStore(Store):
                     """
                     SELECT address,
                            COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                           COALESCE(connection_type, '') AS connection_type,
                            COUNT(*)::bigint AS shares,
                            COALESCE(SUM(work), 0)::bigint AS work
                     FROM shares
                     WHERE seq > $1 AND work >= 1
-                    GROUP BY 1, 2
+                    GROUP BY 1, 2, 3
                     """,
                     int(cutoff_seq),
                 )
@@ -1191,30 +1372,34 @@ class PostgresStore(Store):
             """
             SELECT address,
                    COALESCE(NULLIF(BTRIM(worker), ''), '(unknown)') AS worker,
+                   COALESCE(connection_type, '') AS connection_type,
                    COALESCE(SUM(work), 0)::bigint AS work
             FROM shares
             WHERE accepted_at >= now() - ($1 * interval '1 second')
               AND work >= 1
               AND ($2::text[] IS NULL OR address = ANY($2::text[]))
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3
             """,
             int(recent_sec),
             addrs or None,
         )
-        recent_map: dict[tuple[str, str], int] = {
-            (str(r["address"]), str(r["worker"])): int(r["work"] or 0) for r in recent
+        recent_map: dict[tuple[str, str, str], int] = {
+            (str(r["address"]), str(r["worker"]), str(r["connection_type"] or "")): int(r["work"] or 0)
+            for r in recent
         }
         out: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
             addr = str(r["address"])
             wlabel = str(r["worker"])
-            rw = recent_map.get((addr, wlabel), 0)
+            ctype = str(r["connection_type"] or "") or None
+            rw = recent_map.get((addr, wlabel, str(r["connection_type"] or "")), 0)
             out.setdefault(addr, []).append(
                 {
                     "worker": wlabel,
                     "shares": int(r["shares"] or 0),
                     "work": int(r["work"] or 0),
                     "hashrate_hs": estimate_hashrate_hs(rw, recent_sec),
+                    "connection_type": ctype,
                 }
             )
         for addr in out:
@@ -1370,6 +1555,20 @@ class PostgresStore(Store):
     async def total_work(self) -> int:
         return int(await self._p().fetchval("SELECT COALESCE(SUM(work),0) FROM shares") or 0)
 
+    async def sum_work_since(self, since_seconds: int | None) -> int:
+        """Sum Diff1 share work since now-since_seconds; None = all time."""
+        if since_seconds is None:
+            return await self.total_work()
+        row = await self._p().fetchrow(
+            """
+            SELECT COALESCE(SUM(work), 0) AS w
+            FROM shares
+            WHERE accepted_at >= now() - ($1 * interval '1 second')
+            """,
+            int(since_seconds),
+        )
+        return int(row["w"] or 0)
+
     def _block_row(self, r: Any) -> BlockRow:
         keys = set(r.keys()) if hasattr(r, "keys") else set()
         status = str(r["status"]) if "status" in keys and r["status"] is not None else "confirmed"
@@ -1502,6 +1701,13 @@ class PostgresStore(Store):
                         """,
                         str(height),
                     )
+        if intended_payout_json:
+            from tides_pool.miner_payouts import sync_miner_payouts_for_height
+
+            try:
+                await sync_miner_payouts_for_height(self, int(height))
+            except Exception:  # noqa: BLE001
+                pass
 
     async def set_block_payout_meta(
         self,
@@ -1511,6 +1717,7 @@ class PostgresStore(Store):
         intended_payout_json: str | None = None,
         manual_payout_done: bool | None = None,
         manual_payout_note: str | None = None,
+        share_head_seq: int | None = None,
     ) -> None:
         # Build dynamic SET — only touch provided fields
         sets: list[str] = []
@@ -1527,12 +1734,22 @@ class PostgresStore(Store):
         if manual_payout_note is not None:
             args.append(manual_payout_note)
             sets.append(f"manual_payout_note = ${len(args)}")
+        if share_head_seq is not None:
+            args.append(int(share_head_seq))
+            sets.append(f"share_head_seq = ${len(args)}")
         if not sets:
             return
         await self._p().execute(
             f"UPDATE blocks SET {', '.join(sets)} WHERE height = $1",
             *args,
         )
+        from tides_pool.miner_payouts import sync_miner_payouts_for_height
+
+        try:
+            await sync_miner_payouts_for_height(self, int(height))
+        except Exception:  # noqa: BLE001
+            pass
+
 
     async def count_manual_payouts_pending(self) -> int:
         val = await self._p().fetchval(
@@ -1558,6 +1775,20 @@ class PostgresStore(Store):
             limit,
         )
         return [self._block_row(r) for r in rows]
+
+    async def get_block(self, height: int) -> BlockRow | None:
+        row = await self._p().fetchrow(
+            """
+            SELECT height, block_hash, difficulty, reward_sats, finder_address, accounted_at,
+                   COALESCE(status, 'confirmed') AS status, share_head_seq, orphan_reason,
+                   COALESCE(payout_mode, 'onchain_split') AS payout_mode,
+                   COALESCE(manual_payout_done, false) AS manual_payout_done,
+                   manual_payout_note, intended_payout_json
+            FROM blocks WHERE height = $1
+            """,
+            int(height),
+        )
+        return self._block_row(row) if row else None
 
     async def finder_workers_for_blocks(self, blocks: list[BlockRow]) -> dict[int, str]:
         """Best-effort: is_block share_attempt for finder near accounted_at; else last worker share."""
@@ -1861,10 +2092,120 @@ class PostgresStore(Store):
             key,
             value,
         )
+        if key.startswith("manual_adjustment_"):
+            try:
+                h = int(key.rsplit("_", 1)[-1])
+            except ValueError:
+                return
+            from tides_pool.miner_payouts import sync_miner_payouts_for_height
+
+            try:
+                await sync_miner_payouts_for_height(self, h)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def get_meta(self, key: str, default: str | None = None) -> str | None:
         val = await self._p().fetchval("SELECT value FROM meta WHERE key = $1", key)
         return default if val is None else str(val)
+
+    async def upsert_miner_payouts(self, rows: list[MinerPayoutRow]) -> int:
+        if not rows:
+            return 0
+        n = 0
+        async with self._p().acquire() as conn:
+            for row in rows:
+                await conn.execute(
+                    """
+                    INSERT INTO miner_payouts(
+                      height, address, sats, kind, source, status, txid, paid_at
+                    )
+                    VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (height, address, source) DO UPDATE SET
+                      sats = EXCLUDED.sats,
+                      kind = EXCLUDED.kind,
+                      status = EXCLUDED.status,
+                      txid = EXCLUDED.txid,
+                      paid_at = EXCLUDED.paid_at
+                    """,
+                    int(row.height),
+                    row.address,
+                    int(row.sats),
+                    row.kind,
+                    row.source,
+                    row.status,
+                    row.txid,
+                    row.paid_at,
+                )
+                n += 1
+        return n
+
+    async def delete_miner_payouts(
+        self, height: int, *, sources: list[str] | None = None
+    ) -> int:
+        if sources:
+            val = await self._p().fetchval(
+                """
+                WITH d AS (
+                  DELETE FROM miner_payouts
+                  WHERE height = $1 AND source = ANY($2::text[])
+                  RETURNING 1
+                )
+                SELECT COUNT(*) FROM d
+                """,
+                int(height),
+                list(sources),
+            )
+        else:
+            val = await self._p().fetchval(
+                """
+                WITH d AS (
+                  DELETE FROM miner_payouts WHERE height = $1 RETURNING 1
+                )
+                SELECT COUNT(*) FROM d
+                """,
+                int(height),
+            )
+        return int(val or 0)
+
+    async def list_miner_payouts_for_address(
+        self, address: str, *, limit: int = 500
+    ) -> list[MinerPayoutRow]:
+        rows = await self._p().fetch(
+            """
+            SELECT height, address, sats, kind, source, status, txid, paid_at
+            FROM miner_payouts
+            WHERE address = $1
+            ORDER BY height DESC, sats DESC
+            LIMIT $2
+            """,
+            address,
+            int(limit),
+        )
+        out: list[MinerPayoutRow] = []
+        for r in rows:
+            out.append(
+                MinerPayoutRow(
+                    height=int(r["height"]),
+                    address=str(r["address"]),
+                    sats=int(r["sats"]),
+                    kind=str(r["kind"]),
+                    source=str(r["source"]),
+                    status=str(r["status"]),
+                    txid=r["txid"],
+                    paid_at=r["paid_at"],
+                )
+            )
+        return out
+
+    async def sum_miner_payouts_paid(self, address: str) -> int:
+        val = await self._p().fetchval(
+            """
+            SELECT COALESCE(SUM(sats), 0) FROM miner_payouts
+            WHERE address = $1 AND status = 'paid'
+            """,
+            address,
+        )
+        return int(val or 0)
 
     async def open_finder_credit(self, height: int, address: str, credit_sats: int) -> None:
         # One credit per find height — first claimer wins (no stacked bonuses).
@@ -2173,6 +2514,7 @@ def contributor_rows(
     hashrate_window_sec: int = 600,
     current_since_seq: int | None = None,
     confirmed_heads: list[tuple[int, int]] | None = None,
+    cutoff_seq: int | None = None,
 ) -> list[dict[str, Any]]:
     """Build contributor rows for the payout window.
 
@@ -2183,12 +2525,17 @@ def contributor_rows(
 
     confirmed_heads: newest-first list of (height, share_head_seq) for confirmed finds
     in the payout window. Used to label last_share_blocks_ago / height.
+
+    eras_with_work / window_eras: how many distinct block-periods in the window
+    this address has any shares in (e.g. 4/8 = 50%). Not the same as payout % —
+    payout stays work-weighted.
     """
     work: dict[str, int] = {}
     shares: dict[str, int] = {}
     work_cur: dict[str, int] = {}
     shares_cur: dict[str, int] = {}
     max_seq: dict[str, int] = {}
+    eras_hit: dict[str, set[int]] = {}
     for s in window:
         work[s.address] = work.get(s.address, 0) + s.work
         shares[s.address] = shares.get(s.address, 0) + 1
@@ -2206,6 +2553,31 @@ def contributor_rows(
 
     heads = list(confirmed_heads or [])
 
+    def _era_for_seq(seq: int) -> int:
+        """Map share seq → era index (0=CURRENT, 1=1 ago, …). Same rules as last-share label."""
+        if not heads:
+            return 0
+        newest_head = int(heads[0][1])
+        if seq > newest_head:
+            return 0  # CURRENT
+        for i, (_height, _head) in enumerate(heads):
+            prev_head = int(heads[i + 1][1]) if i + 1 < len(heads) else -1
+            if seq > prev_head:
+                return i + 1
+        return len(heads)
+
+    # Denominator: with N confirmed heads + current unfinished → N eras when cutoff
+    # aligns to oldest head; else CURRENT + each listed find.
+    if not heads:
+        window_eras = 1
+    elif cutoff_seq is None:
+        window_eras = len(heads) + 1
+    else:
+        window_eras = max(len(heads), 1)
+
+    for s in window:
+        eras_hit.setdefault(s.address, set()).add(_era_for_seq(int(s.seq)))
+
     def _last_share_label(addr: str) -> tuple[int, int | None]:
         """Return (blocks_ago, height|None). ago=0 → CURRENT (unfinished block)."""
         ms = max_seq.get(addr)
@@ -2219,9 +2591,7 @@ def contributor_rows(
         for i, (height, head) in enumerate(heads):
             prev_head = int(heads[i + 1][1]) if i + 1 < len(heads) else -1
             if ms > prev_head:
-                # Shares landed while this confirmed find was the "current" block
                 return i + 1, int(height)
-        # Older than oldest head in list — attribute to oldest
         return len(heads), int(heads[-1][0])
 
     rows = []
@@ -2229,6 +2599,10 @@ def contributor_rows(
         rw = recent_work.get(addr, 0)
         hs = estimate_hashrate_hs(rw, hashrate_window_sec) if rw else 0.0
         ago, last_h = _last_share_label(addr)
+        n_eras = len(eras_hit.get(addr) or ())
+        eras_pct = (
+            round(100.0 * n_eras / float(window_eras), 1) if window_eras > 0 else 0.0
+        )
         rows.append(
             {
                 "address": addr,
@@ -2238,7 +2612,6 @@ def contributor_rows(
                 "shares": shares.get(addr, 0),
                 "shares_current": shares_cur.get(addr, 0),
                 "hashrate_hs": hs,
-                # live = recent HR; idle = this-block work but quiet; offline = no this-block work
                 "activity": (
                     "live"
                     if hs > 0
@@ -2246,10 +2619,14 @@ def contributor_rows(
                 ),
                 "last_share_blocks_ago": int(ago),
                 "last_share_block_height": last_h,
+                "window_eras": int(window_eras),
+                "eras_with_work": int(n_eras),
+                "eras_with_work_pct": float(eras_pct),
             }
         )
     rows.sort(key=lambda r: (-r["work"], r["address"]))
     return rows
+
 
 
 # Bitcoin-pool Diff1 convention: expected hashes ≈ difficulty × 2^32

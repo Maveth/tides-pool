@@ -1,109 +1,68 @@
 # tides-pool
 
-**DATUM Prime + TIDES** mining pool for **Bitcoin mainnet Blake2b (BIP110 / RDTS)**.
+**DATUM Prime + TIDES** mining pool server (lab / **TN4 Blake2b · Catbus RC3**).
 
-Public site: **[https://riptide.maveth.ca/](https://riptide.maveth.ca/)** / **[https://tides.maveth.ca/](https://tides.maveth.ca/)** (RIPTIDE dashboard)  
-Prime: **`tides.maveth.ca:28916`**
-
-Miners do **not** stratum to Prime for work templates. Your **DATUM Gateway** builds jobs and talks to Prime for coinbaser + share accounting.
+This is the **pool** side. Miners do **not** stratum to this host for work templates.
 
 ```text
-ASIC/GPU  →  YOUR DATUM Gateway (Blake2b)  →  tides-pool Prime (:28916)
-                                              ↑ coinbaser + TIDES shares
-Stats UI  ←  HTTP (:8088)  [lab-website snapshot dash — see lab-website/]
-Live API  ←  HTTP (:8087)  [deploy-tides-web — source for snaps / fresher JSON]
+GPU/ASIC  →  YOUR DATUM Gateway (Blake2b)  →  tides-pool Prime (:28916)
+                                              ↑ coinbaser + share accounting
+Stats site  ←  HTTP (:8088)
 ```
 
-**Public dash architecture:** [`lab-website/`](lab-website/) + [`docs/SITE_SNAPSHOT.md`](docs/SITE_SNAPSHOT.md)
-(5‑min snapshots + live gateway-class / manual-adjustment overlays).
-
-Related Gateway builds:
-
-| Prefer | Notes |
-|--------|--------|
-| [Leo StartOS `pow_0.4.1_18+`](https://github.com/Retropex/datum-gateway-startos/releases) | Known-good multi-out / tip path |
-| Experimental CONVOY (`b9ea7dc`+) | Dual-speak configure v3 + ABW-off on this Prime — still experimental |
-| [MaVeTh datum_gateway `bip110-pow-v2`](https://github.com/Maveth/datum_gateway/tree/bip110-pow-v2) | Solo-capable Blake Gateway |
+For the **Blake2b-only DATUM Gateway** (solo by default), see  
+**https://github.com/Maveth/datum_gateway/tree/bip110-pow-v2**
 
 ## What this repo is
 
 | Included | Not included |
 |----------|----------------|
-| DATUM Prime (encrypted pool protocol) | Stratum templates to ASICs |
-| TIDES share log + live coinbaser | Lightning / custodial balances |
-| Web UI (contributors, charts, health) | Your wallet private keys |
-| Optional web/prime split (`TIDES_ROLE`) | Automatic off-chain finder payouts |
+| DATUM Prime (encrypted `pool_host` protocol) | Stratum work templates for ASICs |
+| TIDES share log + coinbase suggestions | Lightning payouts |
+| Optional finder-fee split + per-address work cap | Custodial balances |
+| Simple stats / join UI | Your wallet private keys |
 
-## Quick join (Gateway operators)
+## Quick join (operators of a Gateway)
 
-In **your** DATUM config:
+In **your** DATUM config (not this server’s stratum):
 
 ```json
 "datum": {
   "pool_host": "tides.maveth.ca",
   "pool_port": 28916,
-  "pool_pubkey": "<128-hex from site Join /api/info>",
-  "pooled_mining_only": false,
-  "pool_pass_full_users": false,
-  "pool_pass_workers": true
+  "pool_pubkey": "",
+  "pooled_mining_only": false
 }
 ```
 
-**Important**
+Empty `pool_pubkey` works on MaVeTh Blake Gateway builds (auto-fetch from  
+`https://<pool_host>/api/pool_pubkey`). Paste the pubkey on other builds.
 
-- **Pool Pass Full Users = OFF** — miners should send **worker names only**; username must resolve to a **`bc1…` payout** (or `bc1….worker`). Bare nicknames → `bad payout address` rejects.
-- Prefer Leo **`_18+`** for production Gateways. Watch CONVOY for type-0 / empty-tip coinbase behavior on Blake.
+Stats: **https://tides.maveth.ca/**
 
-Stats + connect copy: **https://tides.maveth.ca/**
+### Payout address required
 
-## Fees (live policy)
-
-- **DATUM / own Gateway (preferred):** `TIDES_FEE_BPS=0` — coinbase = window work only (no ops cut).
-- **Pool SV1** `riptide.maveth.ca:23337` (**strongly discouraged**): separate **work skim** via `meta.runtime_fees` / `local_work_fee_bps` (currently **2%**); half → live miners as `STRATUM FEE`, half → ops. Not a coinbaser cut.
-- Username on SV1: `bc1…payout.worker`, password `x`.
-
-Do not assume README fee math matches production without checking `/api/stats` → `fee_bps` and site How to connect.
+Stratum username **must** be a valid TN4 Bitcoin address (`tb1…` / legacy `m`/`n`/`2…`), optionally `ADDRESS.worker`. Non-addresses (e.g. `box2`) are rejected with `BAD_USERNAME` — no TIDES credit.
 
 ## Run (TrueNAS / Docker)
 
-**Split (recommended live):** website restarts do not bounce Gateways.
-
 ```bash
 cd deploy
-# set TIDES_POOL_OPS_ADDRESS, RPC, keys path, etc.
-docker compose -f docker-compose.yml -f docker-compose.split.yml up -d --build
+# set TIDES_POOL_OPS_ADDRESS to your fee address
+docker compose up -d --build
 ```
 
-| Process | Role | Ports |
-|---------|------|-------|
-| `lab-website` | Public snapshot UI + overlays | host **8088** (see `lab-website/`) |
-| `tides-web` | Live `/api/*` (snap source) | host **8087** |
-| `tides-prime` | DATUM Prime + coinbaser | host **28916** (+ health **8089**) |
-| `postgres` | share / block DB | internal |
-| `bip110-datum-sv1` | Pool SV1 stratum (discouraged) | host **23337** |
+- UI/API: host **8088** → container 8080  
+- Prime: host **28916**  
+- Generate/persist keys under `deploy/datum-pool/pool_keys.json` (gitignored)
 
-Single-process (lab / legacy): `docker compose up -d --build` with `TIDES_ROLE=all`.
-
-Persist Prime keys under `deploy/datum-pool/pool_keys.json` (gitignored).
-
-See `docs/` for design notes, ports, and wallets. After UI-only edits on a live host, re-`docker cp` static/API into the web container (image recreate wipes overlays).
-
-## Health / privacy
-
-- `/health` and `/api/health` expose status for the header chip.
-- Gateway peer IPs in `checks.gateway_uas` are **masked** to `*.*.*.last` (full IPs stay in Prime logs only).
-
-## Payout verification
-
-- Helper: `tides_pool/payment_verify.py`
-- Unit tests: `tests/test_payment_verify.py`
-- Live gate (NAS): `scripts/_live_verify_payments_vs_coinbase.py` — web coinbaser vs Prime + last find listed vs chain
+See `docs/` for wallets, ports, and fee math.
 
 ## Solo DATUM vs this pool
 
-| | Gateway | This repo |
-|--|---------|-----------|
-| Role | Templates + Stratum to hardware | Shares + TIDES coinbaser |
+| | Gateway repo | This repo |
+|--|--------------|-----------|
+| Role | Build templates + Stratum to hardware | Coordinate shares + TIDES coinbaser |
 | Solo | `pool_host: ""` | not used |
 | Pooled | `pool_host` → Prime | runs Prime |
 

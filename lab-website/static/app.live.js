@@ -274,8 +274,19 @@ function clipCell(text, { title = "", wide = false, mono = false } = {}) {
 }
 
 function mempoolBase(info) {
-  const u = (info && info.mempool_explorer_url) || window.MEMPOOL_URL || "https://mempool.guide";
-  return String(u).replace(/\/$/, "");
+  let u =
+    (info && info.mempool_explorer_url) ||
+    window.MEMPOOL_URL ||
+    "https://mempool.kilombino.com";
+  u = String(u);
+  if (
+    u.includes("mempool.maveth.ca") ||
+    u.includes("mempool.guide") ||
+    u.includes("mempool.space")
+  ) {
+    u = "https://mempool.kilombino.com";
+  }
+  return u.replace(/\/$/, "");
 }
 
 function mempoolBlockHref(b, info) {
@@ -1655,23 +1666,39 @@ function netAxisStepHs(axisMaxHs) {
 }
 
 function blockScatter(blocks, yMax, { inWindowOnly = null } = {}) {
-  const y = yMax * 0.92 || 1;
-  return (blocks || [])
+  const yTop = yMax * 0.92 || 1;
+  const yStep = Math.max(yMax * 0.07, 1e-9);
+  // Finds within this gap share nearly the same x-pixel on 24h/7d charts
+  // (e.g. #970302+#970303 ~17s apart) — stagger Y so both markers show.
+  const CLUSTER_MS = 3 * 60 * 1000;
+  const pts = (blocks || [])
     .filter((b) => {
+      const st = String((b && b.status) || "confirmed").toLowerCase();
+      if (st === "orphaned" || st === "misattributed") return false;
       if (inWindowOnly === true) return !!b.in_window;
       if (inWindowOnly === false) return !b.in_window;
       return true;
     })
     .map((b) => ({
       x: Number(b.t) * 1000,
-      y,
+      y: yTop,
       height: b.height,
       block_hash: b.block_hash,
       worker: b.worker,
       nickname: b.nickname,
       status: b.status,
       in_window: !!b.in_window,
-    }));
+    }))
+    .sort((a, b) => a.x - b.x || Number(a.height) - Number(b.height));
+  let cluster = 0;
+  let lastX = null;
+  for (const p of pts) {
+    if (lastX != null && p.x - lastX < CLUSTER_MS) cluster += 1;
+    else cluster = 0;
+    p.y = Math.max(yTop - cluster * yStep, yMax * 0.55);
+    lastX = p.x;
+  }
+  return pts;
 }
 
 /**
@@ -2432,28 +2459,38 @@ function renderPayoutHistory(payouts) {
   const body = document.getElementById("payoutHistoryBody");
   const hint = document.getElementById("payoutHistoryHint");
   if (!body) return;
-  if (!payouts || !payouts.length) {
+  // Hide zero-value finder bonus rows (promo ended / credit_sats=0).
+  const rows = (payouts || []).filter(
+    (p) => !(String(p.kind || "") === "finder" && Number(p.sats || 0) <= 0)
+  );
+  if (!rows.length) {
     body.innerHTML = `<tr><td colspan="5" class="muted">No reconstructed payouts yet</td></tr>`;
     if (hint) hint.textContent = "none yet · click to expand";
     return;
   }
-  // Match Total earned: tides lines + paid finder only (exclude unpaid finder).
-  const earnedSats = payouts.reduce((a, p) => {
-    if (p.kind === "finder" && (p.status === "unpaid" || p.paid_in_height == null)) {
+  // Match Total earned: paid settlement lines only (exclude unpaid finder / pending owed).
+  const earnedSats = rows.reduce((a, p) => {
+    if (p.status === "unpaid" || p.status === "pending") {
+      return a;
+    }
+    if (p.kind === "finder" && p.paid_in_height == null) {
       return a;
     }
     return a + Number(p.sats || 0);
   }, 0);
-  const unpaidN = payouts.filter(
-    (p) => p.kind === "finder" && (p.status === "unpaid" || p.paid_in_height == null)
+  const unpaidN = rows.filter(
+    (p) =>
+      p.kind === "finder" &&
+      Number(p.sats || 0) > 0 &&
+      (p.status === "unpaid" || p.paid_in_height == null)
   ).length;
   if (hint) {
     hint.textContent =
-      `${payouts.length} line(s) · ${fmtBtc(earnedSats)}` +
+      `${rows.length} line(s) · ${fmtBtc(earnedSats)}` +
       (unpaidN ? ` · ${unpaidN} unpaid finder` : "") +
       " · click to expand";
   }
-  body.innerHTML = payouts
+  body.innerHTML = rows
     .map((p) => {
       const kind =
         p.kind === "finder"
@@ -2615,19 +2652,43 @@ async function loadUser(address) {
     lastFindCard = card("Last find", "none yet");
   }
 
+  const erasN = Number(user.eras_with_work || 0);
+  const erasTot = Number(user.window_eras || 0);
+  const erasPct = Number(user.eras_with_work_pct || 0);
+  const sharePct = Number(user.share_pct || 0);
+  const estNote =
+    `Assumes you keep ~${sharePct.toFixed(2)}% of window work (same share as now). ` +
+    (erasTot > 0
+      ? `Active in ${erasN} of ${erasTot} block-periods in the payout window (${erasPct.toFixed(0)}% vested). ` +
+        `If you go idle, older work ages out and this estimate drops.`
+      : `If you go idle, older work ages out and this estimate drops.`);
+  const erasCard =
+    erasTot > 0
+      ? card(
+          "Blocks w/ work",
+          `<span title="${erasN} of ${erasTot} block-periods in the payout window had your shares (not the same as payout %)">${erasN} / ${erasTot} · ${erasPct.toFixed(0)}%</span>`
+        )
+      : "";
+
   document.getElementById("userCards").innerHTML = [
     qCard,
     card(
       "Total earned",
-      `<span title="${fmtBtcTitle(user.total_earned_sats)} — TIDES share lines in past finds">${fmtBtc(user.total_earned_sats)}</span>`,
+      `<span title="${fmtBtcTitle(user.total_earned_sats)} — sum of paid coinbase / manual payouts">${fmtBtc(user.total_earned_sats)}</span>`,
       true
     ),
     lastFindCard,
-    card("Share of window", user.share_pct.toFixed(4) + "%"),
+    card(
+      "Share of window",
+      `<span title="Your work ÷ all window work (7 confirmed finds + current). Est. next uses this share via live coinbaser.">${sharePct.toFixed(4)}%</span>`
+    ),
+    erasCard,
     card("Work in window", fmtInt(user.work_in_window)),
     card(
       "Est. next block payout",
-      `<span title="${fmtBtcTitle(user.estimated_next_sats || 0)} — your tides window share">${fmtBtc(user.estimated_next_sats || 0)}</span>`
+      `<span title="${fmtBtcTitle(user.estimated_next_sats || 0)}">${fmtBtc(user.estimated_next_sats || 0)}</span>`,
+      false,
+      estNote
     ),
     card(
       "Workers",
